@@ -202,7 +202,7 @@ function PracticeScreen() {
               height: "100%",
               playerVars: { playsinline: 1, controls: 0, rel: 0, modestbranding: 1 },
             }}
-            onReady={(e) => {
+            onReady={(e: { target: YouTubePlayer }) => {
               playerRef.current = e.target;
               playSegment(index);
             }}
