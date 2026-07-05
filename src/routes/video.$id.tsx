@@ -1,8 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import YouTube, { type YouTubePlayer } from "react-youtube";
-import { getVideo } from "@/lib/mock-data";
+import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
 
 export const Route = createFileRoute("/video/$id")({
   head: ({ params }) => {
