@@ -1,8 +1,8 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import YouTube, { type YouTubePlayer } from "react-youtube";
-import { getVideo } from "@/lib/mock-data";
+import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
+import { getVideo, type TranscriptLine } from "@/lib/mock-data";
 
 export const Route = createFileRoute("/video/$id")({
   head: ({ params }) => {
@@ -80,7 +80,7 @@ function VideoScreen() {
 
       <div className="mx-auto max-w-2xl">
         <div className="aspect-video w-full bg-black">
-          <YouTube
+          <YTPlayer
             videoId={video.youtubeId}
             className="h-full w-full"
             iframeClassName="h-full w-full"
@@ -89,7 +89,7 @@ function VideoScreen() {
               height: "100%",
               playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
             }}
-            onReady={(e) => {
+            onReady={(e: { target: YouTubePlayer }) => {
               playerRef.current = e.target;
             }}
           />
