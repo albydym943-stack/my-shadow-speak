@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as VideoIdRouteImport } from './routes/video.$id'
+import { Route as PracticeIdIdxRouteImport } from './routes/practice.$id.$idx'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +23,40 @@ const VideoIdRoute = VideoIdRouteImport.update({
   path: '/video/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PracticeIdIdxRoute = PracticeIdIdxRouteImport.update({
+  id: '/practice/$id/$idx',
+  path: '/practice/$id/$idx',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/video/$id': typeof VideoIdRoute
+  '/practice/$id/$idx': typeof PracticeIdIdxRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/video/$id': typeof VideoIdRoute
+  '/practice/$id/$idx': typeof PracticeIdIdxRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/video/$id': typeof VideoIdRoute
+  '/practice/$id/$idx': typeof PracticeIdIdxRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/video/$id'
+  fullPaths: '/' | '/video/$id' | '/practice/$id/$idx'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/video/$id'
-  id: '__root__' | '/' | '/video/$id'
+  to: '/' | '/video/$id' | '/practice/$id/$idx'
+  id: '__root__' | '/' | '/video/$id' | '/practice/$id/$idx'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   VideoIdRoute: typeof VideoIdRoute
+  PracticeIdIdxRoute: typeof PracticeIdIdxRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +75,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof VideoIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/practice/$id/$idx': {
+      id: '/practice/$id/$idx'
+      path: '/practice/$id/$idx'
+      fullPath: '/practice/$id/$idx'
+      preLoaderRoute: typeof PracticeIdIdxRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   VideoIdRoute: VideoIdRoute,
+  PracticeIdIdxRoute: PracticeIdIdxRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
