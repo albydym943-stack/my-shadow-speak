@@ -55,6 +55,7 @@ function PracticeScreen() {
   const stopTimerRef = useRef<number | null>(null);
   const activeSegmentRef = useRef<{ start: number; end: number; index: number } | null>(null);
   const stoppingRef = useRef(false);
+  const lastPlayerStateRef = useRef<number | null>(null);
   const recognitionRef = useRef<any>(null);
   const advanceTimerRef = useRef<number | null>(null);
 
@@ -140,12 +141,20 @@ function PracticeScreen() {
   const handlePlayerStateChange = useCallback(
     async (e: { data: number; target: YouTubePlayer }) => {
       const playingState = 1;
+      const pausedState = 2;
+      const previousState = lastPlayerStateRef.current;
+      lastPlayerStateRef.current = e.data;
       if (e.data !== playingState || stoppingRef.current) return;
       const active = activeSegmentRef.current ?? (line ? { start: line.start, end: line.end, index } : null);
       if (!active) return;
       try {
         const t = await e.target.getCurrentTime();
-        if (typeof t !== "number" || t >= active.end - 0.05 || t < active.start - 0.15) {
+        if (
+          previousState === pausedState ||
+          typeof t !== "number" ||
+          t >= active.end - 0.05 ||
+          t < active.start - 0.15
+        ) {
           e.target.seekTo(active.start, true);
         }
         e.target.setPlaybackRate(SPEEDS[speedIdx]);
