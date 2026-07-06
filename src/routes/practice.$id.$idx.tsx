@@ -205,7 +205,7 @@ function PracticeScreen() {
   // Close tooltip on outside click.
   useEffect(() => {
     if (activeWord === null) return;
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: Event) => {
       const target = e.target as HTMLElement | null;
       if (!target?.closest("[data-word-token]")) setActiveWord(null);
     };
