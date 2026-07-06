@@ -1,8 +1,9 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, Mic, Square, RotateCcw, Gauge, Volume2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
 import { getVideo } from "@/lib/mock-data";
+import { translate } from "@/lib/translations";
 
 export const Route = createFileRoute("/practice/$id/$idx")({
   head: () => ({ meta: [{ title: "Practice — Shadowly" }] }),
@@ -33,33 +34,38 @@ function scoreWords(target: string, heard: string): { words: WordResult[]; ratio
   return { words, ratio: tgt.length ? ok / tgt.length : 0 };
 }
 
+// Split a sentence into tokens keeping punctuation attached so display stays natural.
+function tokenize(text: string): string[] {
+  return text.match(/\S+/g) ?? [];
+}
+
 function PracticeScreen() {
   const { id, idx } = Route.useParams();
-  const navigate = useNavigate();
   const video = getVideo(id);
   const [index, setIndex] = useState(Number(idx) || 0);
   const [showIpa, setShowIpa] = useState(false);
   const [speedIdx, setSpeedIdx] = useState(0);
   const [recording, setRecording] = useState(false);
   const [result, setResult] = useState<WordResult[] | null>(null);
-  const [status, setStatus] = useState<string>("Tap replay or record to begin");
+  const [status, setStatus] = useState<string>("Listen…");
   const [error, setError] = useState<string | null>(null);
+  const [activeWord, setActiveWord] = useState<number | null>(null);
   const playerRef = useRef<YouTubePlayer | null>(null);
+  const rafRef = useRef<number | null>(null);
   const stopTimerRef = useRef<number | null>(null);
   const recognitionRef = useRef<any>(null);
   const advanceTimerRef = useRef<number | null>(null);
 
   const line = video?.transcript[index];
 
-  const pollRef = useRef<number | null>(null);
   const clearSegmentTimers = () => {
     if (stopTimerRef.current) {
       window.clearTimeout(stopTimerRef.current);
       stopTimerRef.current = null;
     }
-    if (pollRef.current) {
-      window.clearInterval(pollRef.current);
-      pollRef.current = null;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
     }
   };
 
@@ -71,32 +77,41 @@ function PracticeScreen() {
       const seg = v.transcript[startIndex];
       if (!seg) return;
       clearSegmentTimers();
-      p.setPlaybackRate(SPEEDS[speedIdx]);
-      p.seekTo(seg.start, true);
-      p.playVideo();
+      try {
+        p.setPlaybackRate(SPEEDS[speedIdx]);
+        p.seekTo(seg.start, true);
+        p.playVideo();
+      } catch {}
+      setStatus("Listen…");
 
       const stopAt = seg.end;
+      let stopped = false;
       const doStop = () => {
+        if (stopped) return;
+        stopped = true;
         clearSegmentTimers();
         try {
           p.pauseVideo();
-          // snap back to end to prevent bleed into next line's audio
           p.seekTo(stopAt, true);
         } catch {}
         setStatus("Now tap the mic and repeat");
       };
 
-      // Poll getCurrentTime frequently for a tight cutoff at endTime,
-      // independent of playback rate or buffering.
-      pollRef.current = window.setInterval(async () => {
+      // High-frequency tracker via requestAnimationFrame (~16ms) for tight cutoff.
+      const tick = async () => {
         try {
           const t = await p.getCurrentTime();
-          if (typeof t === "number" && t >= stopAt) doStop();
+          if (typeof t === "number" && t >= stopAt) {
+            doStop();
+            return;
+          }
         } catch {}
-      }, 60);
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
 
-      // Safety fallback timeout in case polling stalls.
-      const durMs = ((seg.end - seg.start) * 1000) / SPEEDS[speedIdx] + 400;
+      // Safety fallback.
+      const durMs = ((seg.end - seg.start) * 1000) / SPEEDS[speedIdx] + 800;
       stopTimerRef.current = window.setTimeout(doStop, durMs);
     },
     [index, speedIdx, video],
@@ -104,7 +119,9 @@ function PracticeScreen() {
 
   const setSpeed = (i: number) => {
     setSpeedIdx(i);
-    playerRef.current?.setPlaybackRate(SPEEDS[i]);
+    try {
+      playerRef.current?.setPlaybackRate(SPEEDS[i]);
+    } catch {}
   };
 
   const SR: any = useMemo(() => {
@@ -175,14 +192,30 @@ function PracticeScreen() {
     setRecording(false);
   };
 
-  // When index changes: reset result and auto-play new segment
+  // When index changes: reset and auto-play new segment.
   useEffect(() => {
     setResult(null);
+    setActiveWord(null);
     setStatus("Listen…");
     const t = window.setTimeout(() => playSegment(index), 250);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index]);
+
+  // Close tooltip on outside click.
+  useEffect(() => {
+    if (activeWord === null) return;
+    const onDown = (e: Event) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest("[data-word-token]")) setActiveWord(null);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("touchstart", onDown);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("touchstart", onDown);
+    };
+  }, [activeWord]);
 
   useEffect(() => {
     return () => {
@@ -195,6 +228,8 @@ function PracticeScreen() {
   }, []);
 
   if (!video || !line) return <div className="p-8">Video not found</div>;
+
+  const tokens = tokenize(line.text);
 
   return (
     <div className="min-h-screen bg-background flex flex-col pb-56">
@@ -247,23 +282,52 @@ function PracticeScreen() {
             <Volume2 className="h-3 w-3" />
             {status}
           </div>
+
           {result ? (
             <p className="text-2xl sm:text-3xl font-semibold leading-snug tracking-tight">
               {result.map((w, i) => (
-                <span
-                  key={i}
-                  className={w.ok ? "text-primary" : "text-destructive"}
-                >
+                <span key={i} className={w.ok ? "text-primary" : "text-destructive"}>
                   {w.word}
                   {i < result.length - 1 ? " " : ""}
                 </span>
               ))}
             </p>
           ) : (
-            <p className="text-2xl sm:text-3xl font-semibold leading-snug text-foreground tracking-tight">
-              {line.text}
+            <p className="text-2xl sm:text-3xl font-semibold leading-snug text-foreground tracking-tight flex flex-wrap justify-center gap-x-2 gap-y-3">
+              {tokens.map((tok, i) => {
+                const meaning = translate(tok);
+                const isActive = activeWord === i;
+                return (
+                  <span key={i} className="relative inline-block" data-word-token>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveWord((cur) => (cur === i ? null : i));
+                      }}
+                      className={
+                        "px-1 rounded-md transition-colors cursor-pointer " +
+                        (isActive ? "bg-primary-soft text-primary" : "hover:bg-primary-soft/60")
+                      }
+                    >
+                      {tok}
+                    </button>
+                    {isActive && (
+                      <span
+                        role="tooltip"
+                        dir="rtl"
+                        className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-30 whitespace-nowrap rounded-lg bg-foreground text-background text-sm font-medium px-3 py-1.5 shadow-lg"
+                      >
+                        {meaning ?? "— لا توجد ترجمة —"}
+                        <span className="absolute -top-1 left-1/2 -translate-x-1/2 h-2 w-2 rotate-45 bg-foreground" />
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
             </p>
           )}
+
           {showIpa && line.ipa && (
             <p className="mt-6 text-base text-muted-foreground italic font-mono">/{line.ipa}/</p>
           )}
