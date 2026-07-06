@@ -51,6 +51,18 @@ function PracticeScreen() {
 
   const line = video?.transcript[index];
 
+  const pollRef = useRef<number | null>(null);
+  const clearSegmentTimers = () => {
+    if (stopTimerRef.current) {
+      window.clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = null;
+    }
+    if (pollRef.current) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
   const playSegment = useCallback(
     (startIndex = index) => {
       const v = video;
@@ -58,15 +70,34 @@ function PracticeScreen() {
       if (!v || !p) return;
       const seg = v.transcript[startIndex];
       if (!seg) return;
+      clearSegmentTimers();
       p.setPlaybackRate(SPEEDS[speedIdx]);
       p.seekTo(seg.start, true);
       p.playVideo();
-      if (stopTimerRef.current) window.clearTimeout(stopTimerRef.current);
-      const dur = ((seg.end - seg.start) * 1000) / SPEEDS[speedIdx];
-      stopTimerRef.current = window.setTimeout(() => {
-        p.pauseVideo();
+
+      const stopAt = seg.end;
+      const doStop = () => {
+        clearSegmentTimers();
+        try {
+          p.pauseVideo();
+          // snap back to end to prevent bleed into next line's audio
+          p.seekTo(stopAt, true);
+        } catch {}
         setStatus("Now tap the mic and repeat");
-      }, dur);
+      };
+
+      // Poll getCurrentTime frequently for a tight cutoff at endTime,
+      // independent of playback rate or buffering.
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const t = await p.getCurrentTime();
+          if (typeof t === "number" && t >= stopAt) doStop();
+        } catch {}
+      }, 60);
+
+      // Safety fallback timeout in case polling stalls.
+      const durMs = ((seg.end - seg.start) * 1000) / SPEEDS[speedIdx] + 400;
+      stopTimerRef.current = window.setTimeout(doStop, durMs);
     },
     [index, speedIdx, video],
   );
