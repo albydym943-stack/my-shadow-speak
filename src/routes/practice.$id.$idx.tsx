@@ -186,7 +186,7 @@ function PracticeScreen() {
 
   useEffect(() => {
     return () => {
-      if (stopTimerRef.current) window.clearTimeout(stopTimerRef.current);
+      clearSegmentTimers();
       if (advanceTimerRef.current) window.clearTimeout(advanceTimerRef.current);
       try {
         recognitionRef.current?.abort();
