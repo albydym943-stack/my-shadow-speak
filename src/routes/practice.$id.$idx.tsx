@@ -163,7 +163,7 @@ function PracticeScreen() {
     if (next < video.transcript.length) {
       setIndex(next);
     } else {
-      pauseAtSentenceEnd(line.end);
+      pauseAtSentenceEnd(video.transcript[index]?.end ?? 0);
       setStatus("You finished! 🎉");
     }
   };
