@@ -77,7 +77,7 @@ function PracticeScreen() {
   const [result, setResult] = useState<WordResult[] | null>(null);
   const [status, setStatus] = useState<string>("Listen…");
   const [error, setError] = useState<string | null>(null);
-  const [activeWord, setActiveWord] = useState<number | null>(null);
+  
   const [wordPractice, setWordPractice] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
