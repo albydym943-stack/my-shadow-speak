@@ -1,5 +1,18 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, ArrowRight, Mic, Square, RotateCcw, Gauge, Volume2 } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import {
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Mic,
+  Square,
+  RotateCcw,
+  Gauge,
+  Volume2,
+  Play,
+  Pause,
+  X,
+  Sparkles,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
 import { getVideo } from "@/lib/mock-data";
@@ -22,6 +35,10 @@ function normalize(s: string) {
     .filter(Boolean);
 }
 
+function stripWord(s: string) {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
+}
+
 function scoreWords(target: string, heard: string): { words: WordResult[]; ratio: number } {
   const tgt = normalize(target);
   const heardSet = new Set(normalize(heard));
@@ -34,13 +51,25 @@ function scoreWords(target: string, heard: string): { words: WordResult[]; ratio
   return { words, ratio: tgt.length ? ok / tgt.length : 0 };
 }
 
-// Split a sentence into tokens keeping punctuation attached so display stays natural.
 function tokenize(text: string): string[] {
   return text.match(/\S+/g) ?? [];
 }
 
+function speak(text: string, rate = 0.9) {
+  try {
+    const s = window.speechSynthesis;
+    if (!s) return;
+    s.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US";
+    u.rate = rate;
+    s.speak(u);
+  } catch {}
+}
+
 function PracticeScreen() {
   const { id, idx } = Route.useParams();
+  const navigate = useNavigate();
   const video = getVideo(id);
   const [index, setIndex] = useState(Number(idx) || 0);
   const [showIpa, setShowIpa] = useState(false);
@@ -50,6 +79,11 @@ function PracticeScreen() {
   const [status, setStatus] = useState<string>("Listen…");
   const [error, setError] = useState<string | null>(null);
   const [activeWord, setActiveWord] = useState<number | null>(null);
+  const [wordPractice, setWordPractice] = useState<string | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [ratio, setRatio] = useState<number | null>(null);
+
   const playerRef = useRef<YouTubePlayer | null>(null);
   const intervalRef = useRef<number | null>(null);
   const stopTimerRef = useRef<number | null>(null);
@@ -57,7 +91,11 @@ function PracticeScreen() {
   const stoppingRef = useRef(false);
   const lastPlayerStateRef = useRef<number | null>(null);
   const recognitionRef = useRef<any>(null);
-  const advanceTimerRef = useRef<number | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const transcriptRef = useRef<string>("");
 
   const line = video?.transcript[index];
 
@@ -98,15 +136,11 @@ function PracticeScreen() {
         try {
           const t = await p.getCurrentTime();
           if (typeof t !== "number") return;
-
           if (t < active.start - 0.15) {
             p.seekTo(active.start, true);
             return;
           }
-
-          if (t >= active.end) {
-            pauseAtSentenceEnd(active.end);
-          }
+          if (t >= active.end) pauseAtSentenceEnd(active.end);
         } catch {}
       }, 40);
     },
@@ -130,8 +164,6 @@ function PracticeScreen() {
       } catch {}
       setStatus("Listen…");
       startSentenceTracker(segment);
-
-      // Safety fallback.
       const durMs = ((seg.end - seg.start) * 1000) / SPEEDS[speedIdx] + 800;
       stopTimerRef.current = window.setTimeout(() => pauseAtSentenceEnd(seg.end), durMs);
     },
@@ -166,15 +198,14 @@ function PracticeScreen() {
     [index, line, speedIdx, startSentenceTracker],
   );
 
-  const goToNextSentence = () => {
+  const goPrev = () => {
     if (!video) return;
-    const next = index + 1;
-    if (next < video.transcript.length) {
-      setIndex(next);
-    } else {
-      pauseAtSentenceEnd(video.transcript[index]?.end ?? 0);
-      setStatus("You finished! 🎉");
-    }
+    if (index > 0) setIndex(index - 1);
+  };
+  const goNext = () => {
+    if (!video) return;
+    if (index + 1 < video.transcript.length) setIndex(index + 1);
+    else setStatus("You finished! 🎉");
   };
 
   const setSpeed = (i: number) => {
@@ -189,52 +220,84 @@ function PracticeScreen() {
     return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   }, []);
 
-  const startRecording = () => {
+  const stopRecording = () => {
+    try {
+      recognitionRef.current?.stop();
+    } catch {}
+    try {
+      mediaRecorderRef.current?.stop();
+    } catch {}
+    setRecording(false);
+  };
+
+  const startRecording = async () => {
     setError(null);
     setResult(null);
+    setRatio(null);
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      setAudioUrl(null);
+    }
     if (!SR) {
       setError("Speech recognition isn't supported in this browser. Try Chrome or Edge.");
       return;
     }
+    // Start MediaRecorder for playback
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      chunksRef.current = [];
+      const mr = new MediaRecorder(stream);
+      mr.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunksRef.current.push(ev.data);
+      };
+      mr.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        const url = URL.createObjectURL(blob);
+        setAudioUrl(url);
+        mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+      };
+      mr.start();
+      mediaRecorderRef.current = mr;
+    } catch (err) {
+      console.error(err);
+      setError("Microphone access denied.");
+      return;
+    }
+
     try {
       const rec = new SR();
       rec.lang = "en-US";
-      rec.interimResults = false;
+      rec.interimResults = true;
       rec.maxAlternatives = 3;
-      rec.continuous = false;
+      rec.continuous = true;
+      transcriptRef.current = "";
       rec.onstart = () => {
         setRecording(true);
-        setStatus("Listening…");
+        setStatus("Recording… tap again to stop");
       };
       rec.onerror = (e: any) => {
-        setRecording(false);
+        if (e?.error === "no-speech" || e?.error === "aborted") return;
         setError(e?.error === "not-allowed" ? "Microphone access denied." : `Mic error: ${e?.error || "unknown"}`);
       };
-      rec.onend = () => setRecording(false);
+      rec.onend = () => {
+        // If user hasn't manually stopped, restart to keep listening despite silence.
+        if (recognitionRef.current === rec && mediaRecorderRef.current?.state === "recording") {
+          try {
+            rec.start();
+            return;
+          } catch {}
+        }
+      };
       rec.onresult = (e: any) => {
-        let best = "";
+        let finalText = "";
         for (let i = 0; i < e.results.length; i++) {
           const r = e.results[i];
-          for (let j = 0; j < r.length; j++) {
-            if (r[j].transcript.length > best.length) best = r[j].transcript;
-          }
+          if (r.isFinal) finalText += " " + r[0].transcript;
         }
-        if (!line) return;
-        const { words, ratio } = scoreWords(line.text, best);
-        setResult(words);
-        if (ratio >= 0.7) {
-          setStatus(`Nice! ${Math.round(ratio * 100)}% match — advancing…`);
-          if (advanceTimerRef.current) window.clearTimeout(advanceTimerRef.current);
-          advanceTimerRef.current = window.setTimeout(() => {
-            const next = index + 1;
-            if (video && next < video.transcript.length) {
-              setIndex(next);
-            } else {
-              setStatus("You finished! 🎉");
-            }
-          }, 1000);
-        } else {
-          setStatus(`${Math.round(ratio * 100)}% match — try again`);
+        if (finalText.trim()) {
+          transcriptRef.current = (transcriptRef.current + " " + finalText).trim();
         }
       };
       recognitionRef.current = rec;
@@ -245,24 +308,38 @@ function PracticeScreen() {
     }
   };
 
-  const stopRecording = () => {
-    try {
-      recognitionRef.current?.stop();
-    } catch {}
-    setRecording(false);
-  };
+  // When MediaRecorder stops, evaluate.
+  useEffect(() => {
+    const mr = mediaRecorderRef.current;
+    if (!mr) return;
+    const original = mr.onstop;
+    mr.onstop = (ev) => {
+      if (typeof original === "function") (original as any).call(mr, ev);
+      if (!line) return;
+      const heard = transcriptRef.current;
+      const { words, ratio: r } = scoreWords(line.text, heard);
+      setResult(words);
+      setRatio(r);
+      setStatus(`${Math.round(r * 100)}% match — review below`);
+    };
+  }, [recording, line]);
 
-  // When index changes: reset and auto-play new segment.
   useEffect(() => {
     setResult(null);
+    setRatio(null);
     setActiveWord(null);
     setStatus("Listen…");
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      setAudioUrl(null);
+    }
     const t = window.setTimeout(() => playSegment(index), 250);
+    // sync URL param
+    if (video) navigate({ to: "/practice/$id/$idx", params: { id: video.id, idx: String(index) }, replace: true });
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index]);
 
-  // Close tooltip on outside click.
   useEffect(() => {
     if (activeWord === null) return;
     const onDown = (e: Event) => {
@@ -280,16 +357,34 @@ function PracticeScreen() {
   useEffect(() => {
     return () => {
       clearSegmentTimers();
-      if (advanceTimerRef.current) window.clearTimeout(advanceTimerRef.current);
       try {
         recognitionRef.current?.abort();
       } catch {}
+      try {
+        mediaRecorderRef.current?.stop();
+      } catch {}
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!video || !line) return <div className="p-8">Video not found</div>;
 
   const tokens = tokenize(line.text);
+  const total = video.transcript.length;
+
+  const playMyVoice = () => {
+    const el = audioElRef.current;
+    if (!el) return;
+    if (audioPlaying) {
+      el.pause();
+      setAudioPlaying(false);
+    } else {
+      el.play();
+      setAudioPlaying(true);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background flex flex-col pb-56">
@@ -303,26 +398,17 @@ function PracticeScreen() {
             <ArrowLeft className="h-5 w-5 text-foreground" />
           </Link>
           <div className="text-xs font-medium text-muted-foreground">
-            {index + 1} / {video.transcript.length}
+            {index + 1} / {total}
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowIpa((s) => !s)}
-              className={
-                "text-xs font-bold px-3 py-1.5 rounded-full transition-colors " +
-                (showIpa ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground")
-              }
-            >
-              IPA
-            </button>
-            <button
-              onClick={goToNextSentence}
-              className="h-9 w-9 grid place-items-center rounded-full bg-secondary hover:bg-primary-soft"
-              aria-label="Next sentence"
-            >
-              <ArrowRight className="h-4 w-4 text-foreground" />
-            </button>
-          </div>
+          <button
+            onClick={() => setShowIpa((s) => !s)}
+            className={
+              "text-xs font-bold px-3 py-1.5 rounded-full transition-colors " +
+              (showIpa ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground")
+            }
+          >
+            IPA
+          </button>
         </div>
       </header>
 
@@ -346,9 +432,9 @@ function PracticeScreen() {
         </div>
       </div>
 
-      <main className="flex-1 mx-auto max-w-2xl w-full px-6 pt-8">
+      <main className="flex-1 mx-auto max-w-2xl w-full px-6 pt-6">
         <div className="text-center">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-soft text-xs font-semibold text-foreground mb-6">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-soft text-xs font-semibold text-foreground mb-5">
             <Volume2 className="h-3 w-3" />
             {status}
           </div>
@@ -375,6 +461,10 @@ function PracticeScreen() {
                         e.stopPropagation();
                         setActiveWord((cur) => (cur === i ? null : i));
                       }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        setWordPractice(stripWord(tok));
+                      }}
                       className={
                         "px-1 rounded-md transition-colors cursor-pointer " +
                         (isActive ? "bg-primary-soft text-primary" : "hover:bg-primary-soft/60")
@@ -385,10 +475,19 @@ function PracticeScreen() {
                     {isActive && (
                       <span
                         role="tooltip"
-                        dir="rtl"
-                        className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-30 whitespace-nowrap rounded-lg bg-foreground text-background text-sm font-medium px-3 py-1.5 shadow-lg"
+                        className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-30 whitespace-nowrap rounded-lg bg-foreground text-background text-xs font-medium px-3 py-2 shadow-lg flex flex-col items-center gap-1.5"
                       >
-                        {meaning ?? "— لا توجد ترجمة —"}
+                        <span dir="rtl">{meaning ?? "— لا توجد ترجمة —"}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveWord(null);
+                            setWordPractice(stripWord(tok));
+                          }}
+                          className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-2 py-0.5 text-[10px] font-bold"
+                        >
+                          <Sparkles className="h-3 w-3" /> Practice word
+                        </button>
                         <span className="absolute -top-1 left-1/2 -translate-x-1/2 h-2 w-2 rotate-45 bg-foreground" />
                       </span>
                     )}
@@ -403,18 +502,91 @@ function PracticeScreen() {
           )}
           {error && <p className="mt-6 text-center text-xs text-destructive">{error}</p>}
         </div>
+
+        {/* Review panel */}
+        {(audioUrl || result) && (
+          <div className="mt-8 rounded-2xl border border-border bg-card p-4 shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-foreground">Review your voice</h3>
+              {ratio !== null && (
+                <span
+                  className={
+                    "text-xs font-bold px-2 py-0.5 rounded-full " +
+                    (ratio >= 0.7 ? "bg-primary-soft text-primary" : "bg-destructive/10 text-destructive")
+                  }
+                >
+                  {Math.round(ratio * 100)}%
+                </span>
+              )}
+            </div>
+
+            {audioUrl && (
+              <div className="flex items-center gap-3 mb-3">
+                <button
+                  onClick={playMyVoice}
+                  className="h-10 w-10 rounded-full bg-primary text-primary-foreground grid place-items-center shadow-md active:scale-95"
+                >
+                  {audioPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
+                </button>
+                <div className="text-xs text-muted-foreground">Listen to your recording</div>
+                <audio
+                  ref={audioElRef}
+                  src={audioUrl}
+                  onEnded={() => setAudioPlaying(false)}
+                  onPause={() => setAudioPlaying(false)}
+                  className="hidden"
+                />
+              </div>
+            )}
+
+            {result && (
+              <div>
+                <div className="text-[11px] font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
+                  Missed words
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {result.filter((w) => !w.ok).length === 0 ? (
+                    <span className="text-xs text-primary font-semibold">All words correct 🎉</span>
+                  ) : (
+                    result
+                      .filter((w) => !w.ok)
+                      .map((w, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setWordPractice(w.word)}
+                          className="rounded-full bg-destructive/10 text-destructive px-2.5 py-1 text-xs font-semibold hover:bg-destructive/20"
+                        >
+                          {w.word}
+                        </button>
+                      ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </main>
 
+      {/* Bottom controls */}
       <div className="fixed bottom-0 inset-x-0 border-t border-border bg-background/95 backdrop-blur">
-        <div className="mx-auto max-w-2xl px-6 py-6 flex items-center justify-between gap-4">
+        <div className="mx-auto max-w-2xl px-4 py-4 flex items-center justify-between gap-2">
+          <button
+            onClick={goPrev}
+            disabled={index === 0}
+            className="h-12 w-12 rounded-full bg-secondary grid place-items-center disabled:opacity-40"
+            aria-label="Previous sentence"
+          >
+            <ChevronLeft className="h-5 w-5 text-foreground" />
+          </button>
+
           <button
             onClick={() => setSpeed((speedIdx + 1) % SPEEDS.length)}
-            className="flex flex-col items-center gap-1 w-16"
+            className="flex flex-col items-center gap-0.5 w-14"
           >
-            <div className="h-12 w-12 rounded-full bg-secondary grid place-items-center">
-              <Gauge className="h-5 w-5 text-foreground" />
+            <div className="h-10 w-10 rounded-full bg-secondary grid place-items-center">
+              <Gauge className="h-4 w-4 text-foreground" />
             </div>
-            <span className="text-[11px] font-bold text-foreground">{SPEEDS[speedIdx]}x</span>
+            <span className="text-[10px] font-bold text-foreground">{SPEEDS[speedIdx]}x</span>
           </button>
 
           <button
@@ -425,17 +597,170 @@ function PracticeScreen() {
                 ? "bg-destructive text-destructive-foreground animate-pulse"
                 : "bg-primary text-primary-foreground shadow-primary/40")
             }
+            aria-label={recording ? "Stop recording" : "Start recording"}
           >
             {recording ? <Square className="h-7 w-7 fill-current" /> : <Mic className="h-8 w-8" />}
           </button>
 
-          <button onClick={() => playSegment(index)} className="flex flex-col items-center gap-1 w-16">
-            <div className="h-12 w-12 rounded-full bg-secondary grid place-items-center">
-              <RotateCcw className="h-5 w-5 text-foreground" />
+          <button onClick={() => playSegment(index)} className="flex flex-col items-center gap-0.5 w-14">
+            <div className="h-10 w-10 rounded-full bg-secondary grid place-items-center">
+              <RotateCcw className="h-4 w-4 text-foreground" />
             </div>
-            <span className="text-[11px] font-bold text-foreground">Replay</span>
+            <span className="text-[10px] font-bold text-foreground">Replay</span>
+          </button>
+
+          <button
+            onClick={goNext}
+            disabled={index + 1 >= total}
+            className="h-12 w-12 rounded-full bg-primary text-primary-foreground grid place-items-center disabled:opacity-40 shadow-md shadow-primary/30"
+            aria-label="Next sentence"
+          >
+            <ChevronRight className="h-5 w-5" />
           </button>
         </div>
+      </div>
+
+      {wordPractice && (
+        <WordPracticeModal word={wordPractice} onClose={() => setWordPractice(null)} SR={SR} />
+      )}
+    </div>
+  );
+}
+
+function WordPracticeModal({
+  word,
+  onClose,
+  SR,
+}: {
+  word: string;
+  onClose: () => void;
+  SR: any;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [feedback, setFeedback] = useState<"ok" | "bad" | null>(null);
+  const [heard, setHeard] = useState<string>("");
+  const [err, setErr] = useState<string | null>(null);
+  const recRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      try {
+        recRef.current?.abort();
+      } catch {}
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {}
+    };
+  }, []);
+
+  const start = () => {
+    setErr(null);
+    setFeedback(null);
+    setHeard("");
+    if (!SR) {
+      setErr("Speech recognition not supported.");
+      return;
+    }
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.maxAlternatives = 5;
+    rec.continuous = false;
+    rec.onstart = () => setRecording(true);
+    rec.onend = () => setRecording(false);
+    rec.onerror = (e: any) => {
+      setRecording(false);
+      if (e?.error !== "no-speech") setErr(e?.error || "mic error");
+    };
+    rec.onresult = (e: any) => {
+      let best = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const r = e.results[i];
+        for (let j = 0; j < r.length; j++) {
+          if (r[j].transcript.length > best.length) best = r[j].transcript;
+        }
+      }
+      setHeard(best);
+      const target = stripWord(word);
+      const ok = normalize(best).some((w) => w === target);
+      setFeedback(ok ? "ok" : "bad");
+    };
+    recRef.current = rec;
+    try {
+      rec.start();
+    } catch {}
+  };
+
+  const stop = () => {
+    try {
+      recRef.current?.stop();
+    } catch {}
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm grid place-items-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-3xl bg-background p-6 shadow-2xl relative"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 h-9 w-9 rounded-full grid place-items-center hover:bg-secondary"
+          aria-label="Close"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <div className="text-[11px] font-bold uppercase tracking-widest text-primary text-center mb-3">
+          Word practice
+        </div>
+        <div className="text-center">
+          <div className="text-4xl font-bold text-foreground break-words">{word}</div>
+        </div>
+
+        <div className="mt-6 flex items-center justify-center gap-3">
+          <button
+            onClick={() => speak(word)}
+            className="inline-flex items-center gap-2 rounded-full bg-secondary text-foreground px-4 py-2.5 text-sm font-semibold hover:bg-primary-soft"
+          >
+            <Volume2 className="h-4 w-4" /> Native audio
+          </button>
+          <button
+            onClick={recording ? stop : start}
+            className={
+              "inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold shadow-md active:scale-95 " +
+              (recording
+                ? "bg-destructive text-destructive-foreground animate-pulse"
+                : "bg-primary text-primary-foreground")
+            }
+          >
+            {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+            {recording ? "Stop" : "Try it"}
+          </button>
+        </div>
+
+        {feedback && (
+          <div
+            className={
+              "mt-6 rounded-2xl p-4 text-center " +
+              (feedback === "ok"
+                ? "bg-primary-soft text-primary"
+                : "bg-destructive/10 text-destructive")
+            }
+          >
+            <div className="text-sm font-bold">
+              {feedback === "ok" ? "Correct! 🎉" : "Not quite — try again"}
+            </div>
+            {heard && (
+              <div className="mt-1 text-xs opacity-80">
+                Heard: <span className="font-semibold">"{heard}"</span>
+              </div>
+            )}
+          </div>
+        )}
+        {err && <div className="mt-4 text-xs text-destructive text-center">{err}</div>}
       </div>
     </div>
   );
