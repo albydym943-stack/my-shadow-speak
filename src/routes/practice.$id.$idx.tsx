@@ -16,7 +16,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
 import { getVideo } from "@/lib/mock-data";
-import { translate } from "@/lib/translations";
+import { translate, definition } from "@/lib/translations";
 
 export const Route = createFileRoute("/practice/$id/$idx")({
   head: () => ({ meta: [{ title: "Practice — Shadowly" }] }),
