@@ -11,12 +11,11 @@ import {
   Play,
   Pause,
   X,
-  Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
 import { getVideo } from "@/lib/mock-data";
-import { translate } from "@/lib/translations";
+import { translate, definition } from "@/lib/translations";
 
 export const Route = createFileRoute("/practice/$id/$idx")({
   head: () => ({ meta: [{ title: "Practice — Shadowly" }] }),
@@ -78,7 +77,7 @@ function PracticeScreen() {
   const [result, setResult] = useState<WordResult[] | null>(null);
   const [status, setStatus] = useState<string>("Listen…");
   const [error, setError] = useState<string | null>(null);
-  const [activeWord, setActiveWord] = useState<number | null>(null);
+  
   const [wordPractice, setWordPractice] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
@@ -238,13 +237,27 @@ function PracticeScreen() {
       URL.revokeObjectURL(audioUrl);
       setAudioUrl(null);
     }
-    if (!SR) {
-      setError("Speech recognition isn't supported in this browser. Try Chrome or Edge.");
+
+    // 1) Request the mic permission ourselves. This is the source of truth —
+    //    if this succeeds, the user granted permission, and any later SR
+    //    "not-allowed" is a spurious browser quirk we ignore.
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err: any) {
+      console.error(err);
+      if (err?.name === "NotAllowedError" || err?.name === "SecurityError") {
+        setError("Microphone access was blocked. Please allow it in your browser settings.");
+      } else if (err?.name === "NotFoundError") {
+        setError("No microphone was found on this device.");
+      } else {
+        setError("Could not access the microphone. Please check your device.");
+      }
       return;
     }
-    // Start MediaRecorder for playback
+
+    // 2) Start MediaRecorder for voice playback.
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
       chunksRef.current = [];
       const mr = new MediaRecorder(stream);
@@ -260,12 +273,18 @@ function PracticeScreen() {
       };
       mr.start();
       mediaRecorderRef.current = mr;
+      setRecording(true);
+      setStatus("Recording… tap again to stop");
     } catch (err) {
       console.error(err);
-      setError("Microphone access denied.");
+      stream.getTracks().forEach((t) => t.stop());
+      setError("Recording is not supported in this browser.");
       return;
     }
 
+    // 3) Start SpeechRecognition alongside (for text scoring). This is
+    //    optional — if it fails, recording still works.
+    if (!SR) return;
     try {
       const rec = new SR();
       rec.lang = "en-US";
@@ -273,17 +292,25 @@ function PracticeScreen() {
       rec.maxAlternatives = 3;
       rec.continuous = true;
       transcriptRef.current = "";
-      rec.onstart = () => {
-        setRecording(true);
-        setStatus("Recording… tap again to stop");
-      };
       rec.onerror = (e: any) => {
-        if (e?.error === "no-speech" || e?.error === "aborted") return;
-        setError(e?.error === "not-allowed" ? "Microphone access denied." : `Mic error: ${e?.error || "unknown"}`);
+        // Because getUserMedia already succeeded, silently ignore permission
+        // and no-speech noise from SpeechRecognition.
+        const kind = e?.error;
+        if (
+          kind === "no-speech" ||
+          kind === "aborted" ||
+          kind === "not-allowed" ||
+          kind === "service-not-allowed"
+        )
+          return;
+        console.warn("SpeechRecognition error", kind);
       };
       rec.onend = () => {
-        // If user hasn't manually stopped, restart to keep listening despite silence.
-        if (recognitionRef.current === rec && mediaRecorderRef.current?.state === "recording") {
+        // Keep listening through silence until the user hits Stop.
+        if (
+          recognitionRef.current === rec &&
+          mediaRecorderRef.current?.state === "recording"
+        ) {
           try {
             rec.start();
             return;
@@ -303,8 +330,8 @@ function PracticeScreen() {
       recognitionRef.current = rec;
       rec.start();
     } catch (err) {
-      console.error(err);
-      setError("Could not start speech recognition.");
+      // Non-fatal: MediaRecorder is still capturing.
+      console.warn("SpeechRecognition failed to start", err);
     }
   };
 
@@ -327,7 +354,6 @@ function PracticeScreen() {
   useEffect(() => {
     setResult(null);
     setRatio(null);
-    setActiveWord(null);
     setStatus("Listen…");
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
@@ -339,20 +365,6 @@ function PracticeScreen() {
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index]);
-
-  useEffect(() => {
-    if (activeWord === null) return;
-    const onDown = (e: Event) => {
-      const target = e.target as HTMLElement | null;
-      if (!target?.closest("[data-word-token]")) setActiveWord(null);
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("touchstart", onDown);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("touchstart", onDown);
-    };
-  }, [activeWord]);
 
   useEffect(() => {
     return () => {
@@ -450,50 +462,20 @@ function PracticeScreen() {
             </p>
           ) : (
             <p className="text-2xl sm:text-3xl font-semibold leading-snug text-foreground tracking-tight flex flex-wrap justify-center gap-x-2 gap-y-3">
-              {tokens.map((tok, i) => {
-                const meaning = translate(tok);
-                const isActive = activeWord === i;
-                return (
-                  <span key={i} className="relative inline-block" data-word-token>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActiveWord((cur) => (cur === i ? null : i));
-                      }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setWordPractice(stripWord(tok));
-                      }}
-                      className={
-                        "px-1 rounded-md transition-colors cursor-pointer " +
-                        (isActive ? "bg-primary-soft text-primary" : "hover:bg-primary-soft/60")
-                      }
-                    >
-                      {tok}
-                    </button>
-                    {isActive && (
-                      <span
-                        role="tooltip"
-                        className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-30 whitespace-nowrap rounded-lg bg-foreground text-background text-xs font-medium px-3 py-2 shadow-lg flex flex-col items-center gap-1.5"
-                      >
-                        <span dir="rtl">{meaning ?? "— لا توجد ترجمة —"}</span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveWord(null);
-                            setWordPractice(stripWord(tok));
-                          }}
-                          className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-2 py-0.5 text-[10px] font-bold"
-                        >
-                          <Sparkles className="h-3 w-3" /> Practice word
-                        </button>
-                        <span className="absolute -top-1 left-1/2 -translate-x-1/2 h-2 w-2 rotate-45 bg-foreground" />
-                      </span>
-                    )}
-                  </span>
-                );
-              })}
+              {tokens.map((tok, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  data-word-token
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setWordPractice(stripWord(tok));
+                  }}
+                  className="px-1 rounded-md transition-colors cursor-pointer hover:bg-primary-soft/60 active:bg-primary-soft"
+                >
+                  {tok}
+                </button>
+              ))}
             </p>
           )}
 
@@ -697,15 +679,19 @@ function WordPracticeModal({
     } catch {}
   };
 
+  const meaning = translate(word);
+  const def = definition(word);
+
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm grid place-items-center p-4"
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm rounded-3xl bg-background p-6 shadow-2xl relative"
+        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl bg-background p-6 pb-8 shadow-2xl relative animate-in slide-in-from-bottom duration-200"
         onClick={(e) => e.stopPropagation()}
       >
+        <div className="sm:hidden mx-auto mb-4 h-1.5 w-10 rounded-full bg-border" />
         <button
           onClick={onClose}
           className="absolute top-3 right-3 h-9 w-9 rounded-full grid place-items-center hover:bg-secondary"
@@ -717,27 +703,42 @@ function WordPracticeModal({
           Word practice
         </div>
         <div className="text-center">
-          <div className="text-4xl font-bold text-foreground break-words">{word}</div>
+          <div className="text-4xl font-black text-foreground break-words">{word}</div>
+          {meaning && (
+            <div dir="rtl" className="mt-2 text-lg font-semibold text-foreground/80">
+              {meaning}
+            </div>
+          )}
+          {def && (
+            <p className="mt-3 text-sm text-muted-foreground leading-relaxed max-w-xs mx-auto">
+              {def}
+            </p>
+          )}
+          {!meaning && !def && (
+            <p className="mt-3 text-xs text-muted-foreground italic">
+              No dictionary entry — try the audio and mic below.
+            </p>
+          )}
         </div>
 
         <div className="mt-6 flex items-center justify-center gap-3">
           <button
             onClick={() => speak(word)}
-            className="inline-flex items-center gap-2 rounded-full bg-secondary text-foreground px-4 py-2.5 text-sm font-semibold hover:bg-primary-soft"
+            className="inline-flex items-center gap-2 rounded-full bg-secondary text-foreground px-4 py-2.5 text-sm font-semibold hover:bg-primary-soft transition-colors"
           >
-            <Volume2 className="h-4 w-4" /> Native audio
+            <Volume2 className="h-4 w-4" /> Listen
           </button>
           <button
             onClick={recording ? stop : start}
             className={
-              "inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold shadow-md active:scale-95 " +
+              "inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold shadow-md active:scale-95 transition-all " +
               (recording
                 ? "bg-destructive text-destructive-foreground animate-pulse"
-                : "bg-primary text-primary-foreground")
+                : "bg-primary text-primary-foreground shadow-primary/30")
             }
           >
             {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-            {recording ? "Stop" : "Try it"}
+            {recording ? "Stop" : "Practice"}
           </button>
         </div>
 
