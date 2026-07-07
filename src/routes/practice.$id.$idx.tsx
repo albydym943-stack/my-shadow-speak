@@ -238,13 +238,27 @@ function PracticeScreen() {
       URL.revokeObjectURL(audioUrl);
       setAudioUrl(null);
     }
-    if (!SR) {
-      setError("Speech recognition isn't supported in this browser. Try Chrome or Edge.");
+
+    // 1) Request the mic permission ourselves. This is the source of truth —
+    //    if this succeeds, the user granted permission, and any later SR
+    //    "not-allowed" is a spurious browser quirk we ignore.
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err: any) {
+      console.error(err);
+      if (err?.name === "NotAllowedError" || err?.name === "SecurityError") {
+        setError("Microphone access was blocked. Please allow it in your browser settings.");
+      } else if (err?.name === "NotFoundError") {
+        setError("No microphone was found on this device.");
+      } else {
+        setError("Could not access the microphone. Please check your device.");
+      }
       return;
     }
-    // Start MediaRecorder for playback
+
+    // 2) Start MediaRecorder for voice playback.
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
       chunksRef.current = [];
       const mr = new MediaRecorder(stream);
@@ -260,12 +274,18 @@ function PracticeScreen() {
       };
       mr.start();
       mediaRecorderRef.current = mr;
+      setRecording(true);
+      setStatus("Recording… tap again to stop");
     } catch (err) {
       console.error(err);
-      setError("Microphone access denied.");
+      stream.getTracks().forEach((t) => t.stop());
+      setError("Recording is not supported in this browser.");
       return;
     }
 
+    // 3) Start SpeechRecognition alongside (for text scoring). This is
+    //    optional — if it fails, recording still works.
+    if (!SR) return;
     try {
       const rec = new SR();
       rec.lang = "en-US";
@@ -273,17 +293,25 @@ function PracticeScreen() {
       rec.maxAlternatives = 3;
       rec.continuous = true;
       transcriptRef.current = "";
-      rec.onstart = () => {
-        setRecording(true);
-        setStatus("Recording… tap again to stop");
-      };
       rec.onerror = (e: any) => {
-        if (e?.error === "no-speech" || e?.error === "aborted") return;
-        setError(e?.error === "not-allowed" ? "Microphone access denied." : `Mic error: ${e?.error || "unknown"}`);
+        // Because getUserMedia already succeeded, silently ignore permission
+        // and no-speech noise from SpeechRecognition.
+        const kind = e?.error;
+        if (
+          kind === "no-speech" ||
+          kind === "aborted" ||
+          kind === "not-allowed" ||
+          kind === "service-not-allowed"
+        )
+          return;
+        console.warn("SpeechRecognition error", kind);
       };
       rec.onend = () => {
-        // If user hasn't manually stopped, restart to keep listening despite silence.
-        if (recognitionRef.current === rec && mediaRecorderRef.current?.state === "recording") {
+        // Keep listening through silence until the user hits Stop.
+        if (
+          recognitionRef.current === rec &&
+          mediaRecorderRef.current?.state === "recording"
+        ) {
           try {
             rec.start();
             return;
@@ -303,8 +331,8 @@ function PracticeScreen() {
       recognitionRef.current = rec;
       rec.start();
     } catch (err) {
-      console.error(err);
-      setError("Could not start speech recognition.");
+      // Non-fatal: MediaRecorder is still capturing.
+      console.warn("SpeechRecognition failed to start", err);
     }
   };
 
