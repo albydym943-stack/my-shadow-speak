@@ -354,7 +354,6 @@ function PracticeScreen() {
   useEffect(() => {
     setResult(null);
     setRatio(null);
-    setActiveWord(null);
     setStatus("Listen…");
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
