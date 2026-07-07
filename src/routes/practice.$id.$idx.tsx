@@ -367,20 +367,6 @@ function PracticeScreen() {
   }, [index]);
 
   useEffect(() => {
-    if (activeWord === null) return;
-    const onDown = (e: Event) => {
-      const target = e.target as HTMLElement | null;
-      if (!target?.closest("[data-word-token]")) setActiveWord(null);
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("touchstart", onDown);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("touchstart", onDown);
-    };
-  }, [activeWord]);
-
-  useEffect(() => {
     return () => {
       clearSegmentTimers();
       try {
