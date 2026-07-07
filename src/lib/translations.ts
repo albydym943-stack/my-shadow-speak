@@ -212,7 +212,7 @@ export const translations: Record<string, string> = {
   kinds: "أنواع",
   need: "يحتاج",
   learn: "يتعلم",
-  seventh: "السابع",
+  // seventh already defined above
   grade: "الصف",
   hard: "صعب",
   ratios: "نِسَب",
