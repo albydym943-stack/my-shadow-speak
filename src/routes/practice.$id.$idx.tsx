@@ -11,7 +11,6 @@ import {
   Play,
   Pause,
   X,
-  Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
