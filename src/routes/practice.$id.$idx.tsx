@@ -679,15 +679,19 @@ function WordPracticeModal({
     } catch {}
   };
 
+  const meaning = translate(word);
+  const def = definition(word);
+
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm grid place-items-center p-4"
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm rounded-3xl bg-background p-6 shadow-2xl relative"
+        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl bg-background p-6 pb-8 shadow-2xl relative animate-in slide-in-from-bottom duration-200"
         onClick={(e) => e.stopPropagation()}
       >
+        <div className="sm:hidden mx-auto mb-4 h-1.5 w-10 rounded-full bg-border" />
         <button
           onClick={onClose}
           className="absolute top-3 right-3 h-9 w-9 rounded-full grid place-items-center hover:bg-secondary"
@@ -699,27 +703,42 @@ function WordPracticeModal({
           Word practice
         </div>
         <div className="text-center">
-          <div className="text-4xl font-bold text-foreground break-words">{word}</div>
+          <div className="text-4xl font-black text-foreground break-words">{word}</div>
+          {meaning && (
+            <div dir="rtl" className="mt-2 text-lg font-semibold text-foreground/80">
+              {meaning}
+            </div>
+          )}
+          {def && (
+            <p className="mt-3 text-sm text-muted-foreground leading-relaxed max-w-xs mx-auto">
+              {def}
+            </p>
+          )}
+          {!meaning && !def && (
+            <p className="mt-3 text-xs text-muted-foreground italic">
+              No dictionary entry — try the audio and mic below.
+            </p>
+          )}
         </div>
 
         <div className="mt-6 flex items-center justify-center gap-3">
           <button
             onClick={() => speak(word)}
-            className="inline-flex items-center gap-2 rounded-full bg-secondary text-foreground px-4 py-2.5 text-sm font-semibold hover:bg-primary-soft"
+            className="inline-flex items-center gap-2 rounded-full bg-secondary text-foreground px-4 py-2.5 text-sm font-semibold hover:bg-primary-soft transition-colors"
           >
-            <Volume2 className="h-4 w-4" /> Native audio
+            <Volume2 className="h-4 w-4" /> Listen
           </button>
           <button
             onClick={recording ? stop : start}
             className={
-              "inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold shadow-md active:scale-95 " +
+              "inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold shadow-md active:scale-95 transition-all " +
               (recording
                 ? "bg-destructive text-destructive-foreground animate-pulse"
-                : "bg-primary text-primary-foreground")
+                : "bg-primary text-primary-foreground shadow-primary/30")
             }
           >
             {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-            {recording ? "Stop" : "Try it"}
+            {recording ? "Stop" : "Practice"}
           </button>
         </div>
 
