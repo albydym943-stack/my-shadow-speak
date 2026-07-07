@@ -478,50 +478,20 @@ function PracticeScreen() {
             </p>
           ) : (
             <p className="text-2xl sm:text-3xl font-semibold leading-snug text-foreground tracking-tight flex flex-wrap justify-center gap-x-2 gap-y-3">
-              {tokens.map((tok, i) => {
-                const meaning = translate(tok);
-                const isActive = activeWord === i;
-                return (
-                  <span key={i} className="relative inline-block" data-word-token>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActiveWord((cur) => (cur === i ? null : i));
-                      }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setWordPractice(stripWord(tok));
-                      }}
-                      className={
-                        "px-1 rounded-md transition-colors cursor-pointer " +
-                        (isActive ? "bg-primary-soft text-primary" : "hover:bg-primary-soft/60")
-                      }
-                    >
-                      {tok}
-                    </button>
-                    {isActive && (
-                      <span
-                        role="tooltip"
-                        className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-30 whitespace-nowrap rounded-lg bg-foreground text-background text-xs font-medium px-3 py-2 shadow-lg flex flex-col items-center gap-1.5"
-                      >
-                        <span dir="rtl">{meaning ?? "— لا توجد ترجمة —"}</span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveWord(null);
-                            setWordPractice(stripWord(tok));
-                          }}
-                          className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-2 py-0.5 text-[10px] font-bold"
-                        >
-                          <Sparkles className="h-3 w-3" /> Practice word
-                        </button>
-                        <span className="absolute -top-1 left-1/2 -translate-x-1/2 h-2 w-2 rotate-45 bg-foreground" />
-                      </span>
-                    )}
-                  </span>
-                );
-              })}
+              {tokens.map((tok, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  data-word-token
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setWordPractice(stripWord(tok));
+                  }}
+                  className="px-1 rounded-md transition-colors cursor-pointer hover:bg-primary-soft/60 active:bg-primary-soft"
+                >
+                  {tok}
+                </button>
+              ))}
             </p>
           )}
 
