@@ -46,10 +46,12 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
   const chunksRef = useRef<Blob[]>([]);
   const transcriptRef = useRef<string>("");
   const targetTextRef = useRef<string>("");
-  const isRestartingRef = useRef(false);
-  const consecutiveErrorsRef = useRef(0);
-  const userStoppedRef = useRef(false);
   const audioUrlRef = useRef<string | null>(null);
+  const optsRef = useRef(opts);
+
+  useEffect(() => {
+    optsRef.current = opts;
+  }, [opts]);
 
   const SR: any = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -60,7 +62,17 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
     audioUrlRef.current = audioUrl;
   }, [audioUrl]);
 
-  const cleanupStream = useCallback(() => {
+  // Fully release every resource. Safe to call multiple times.
+  const cleanupAll = useCallback(() => {
+    try {
+      recognitionRef.current?.abort();
+    } catch {}
+    recognitionRef.current = null;
+    try {
+      const mr = mediaRecorderRef.current;
+      if (mr && mr.state !== "inactive") mr.stop();
+    } catch {}
+    mediaRecorderRef.current = null;
     mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
     mediaStreamRef.current = null;
   }, []);
@@ -78,6 +90,9 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
 
   const start = useCallback(
     async (targetText: string) => {
+      // Ensure no leftovers from any previous run.
+      cleanupAll();
+
       setError(null);
       setResult(null);
       setRatio(null);
@@ -88,9 +103,6 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
       }
       targetTextRef.current = targetText;
       transcriptRef.current = "";
-      userStoppedRef.current = false;
-      consecutiveErrorsRef.current = 0;
-      isRestartingRef.current = false;
 
       let stream: MediaStream;
       try {
@@ -107,8 +119,45 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         return;
       }
 
+      mediaStreamRef.current = stream;
+
+      // Score once, when everything has fully ended.
+      let scored = false;
+      const finish = () => {
+        if (scored) return;
+        scored = true;
+        const heard = transcriptRef.current;
+        const { words, ratio: r } = scoreWords(targetTextRef.current, heard);
+        setResult(words);
+        setRatio(r);
+        optsRef.current.onScore?.(words, r);
+        setRecording(false);
+      };
+
+      // Stops recognition + recorder together. Cleanup happens in mr.onstop.
+      const stopAll = () => {
+        try {
+          recognitionRef.current?.stop();
+        } catch {}
+        try {
+          recognitionRef.current?.abort();
+        } catch {}
+        recognitionRef.current = null;
+        const mr = mediaRecorderRef.current;
+        if (mr && mr.state !== "inactive") {
+          try {
+            mr.stop();
+          } catch {}
+        } else {
+          // No recorder to fire onstop — release stream + score now.
+          mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+          mediaStreamRef.current = null;
+          mediaRecorderRef.current = null;
+          finish();
+        }
+      };
+
       try {
-        mediaStreamRef.current = stream;
         chunksRef.current = [];
         const mr = new MediaRecorder(stream);
         mr.ondataavailable = (ev) => {
@@ -119,79 +168,65 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
           const url = URL.createObjectURL(blob);
           audioUrlRef.current = url;
           setAudioUrl(url);
-          cleanupStream();
-          const heard = transcriptRef.current;
-          const { words, ratio: r } = scoreWords(targetTextRef.current, heard);
-          setResult(words);
-          setRatio(r);
-          opts.onScore?.(words, r);
+          // Full release of mic every time recording ends.
+          mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+          mediaStreamRef.current = null;
+          mediaRecorderRef.current = null;
+          finish();
         };
         mr.start();
         mediaRecorderRef.current = mr;
         setRecording(true);
       } catch (err) {
         console.error(err);
-        cleanupStream();
+        cleanupAll();
         setError("Recording is not supported in this browser.");
         return;
       }
 
-      if (!SR) return;
+      if (!SR) {
+        // No speech recognition — user will need to tap stop via… nothing.
+        // Without SR we cannot auto-stop; end after a short window.
+        return;
+      }
+
       try {
         const rec = new SR();
         rec.lang = "en-US";
         rec.interimResults = true;
         rec.maxAlternatives = 3;
-        rec.continuous = true;
+        rec.continuous = false;
 
         rec.onerror = (e: any) => {
           const kind = e?.error;
           if (kind === "no-speech" || kind === "aborted") return;
           if (kind === "not-allowed" || kind === "service-not-allowed") {
-            consecutiveErrorsRef.current += 1;
-            if (consecutiveErrorsRef.current >= 2) {
-              setError(
-                "Speech recognition was blocked by the browser. Recording continues, but words won't be scored.",
-              );
-              try {
-                rec.abort();
-              } catch {}
-              recognitionRef.current = null;
-            }
-            return;
+            setError(
+              "Speech recognition was blocked by the browser. Please allow microphone access.",
+            );
+          } else {
+            console.warn("SpeechRecognition error", kind);
           }
-          console.warn("SpeechRecognition error", kind);
         };
 
         rec.onresult = (e: any) => {
-          consecutiveErrorsRef.current = 0;
           let finalText = "";
           for (let i = 0; i < e.results.length; i++) {
             const r = e.results[i];
             if (r.isFinal) finalText += " " + r[0].transcript;
+            else if (!finalText) finalText += " " + r[0].transcript;
           }
           if (finalText.trim()) {
-            transcriptRef.current = (transcriptRef.current + " " + finalText).trim();
+            transcriptRef.current = finalText.trim();
           }
         };
 
+        // Native silence detection: browser fires onend on its own.
+        // Do NOT restart — stop the recorder so scoring runs.
         rec.onend = () => {
-          if (userStoppedRef.current) return;
           if (recognitionRef.current !== rec) return;
-          if (mediaRecorderRef.current?.state !== "recording") return;
-          if (isRestartingRef.current) return;
-          isRestartingRef.current = true;
-          window.setTimeout(() => {
-            isRestartingRef.current = false;
-            if (userStoppedRef.current) return;
-            if (recognitionRef.current !== rec) return;
-            if (mediaRecorderRef.current?.state !== "recording") return;
-            try {
-              rec.start();
-            } catch (err) {
-              console.warn("SpeechRecognition restart failed", err);
-            }
-          }, 100);
+          recognitionRef.current = null;
+          stopAll();
         };
 
         recognitionRef.current = rec;
@@ -200,46 +235,37 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         console.warn("SpeechRecognition failed to start", err);
       }
     },
-    [SR, cleanupStream, opts],
+    [SR, cleanupAll],
   );
 
+  // Manual stop (used only on unmount / sentence change / reset).
   const stop = useCallback(() => {
-    userStoppedRef.current = true;
-    const rec = recognitionRef.current;
+    try {
+      recognitionRef.current?.abort();
+    } catch {}
     recognitionRef.current = null;
-    try {
-      rec?.stop();
-    } catch {}
-    try {
-      rec?.abort();
-    } catch {}
     const mr = mediaRecorderRef.current;
-    mediaRecorderRef.current = null;
-    try {
-      if (mr && mr.state !== "inactive") mr.stop();
-    } catch {}
-    setRecording(false);
+    if (mr && mr.state !== "inactive") {
+      try {
+        mr.stop();
+      } catch {}
+    } else {
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      setRecording(false);
+    }
   }, []);
 
   useEffect(() => {
     return () => {
-      userStoppedRef.current = true;
-      try {
-        recognitionRef.current?.abort();
-      } catch {}
-      recognitionRef.current = null;
-      try {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive")
-          mediaRecorderRef.current.stop();
-      } catch {}
-      mediaRecorderRef.current = null;
-      cleanupStream();
+      cleanupAll();
       if (audioUrlRef.current) {
         URL.revokeObjectURL(audioUrlRef.current);
         audioUrlRef.current = null;
       }
     };
-  }, [cleanupStream]);
+  }, [cleanupAll]);
 
   return {
     recording,
