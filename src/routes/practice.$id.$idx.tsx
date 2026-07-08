@@ -10,60 +10,21 @@ import {
   Volume2,
   Play,
   Pause,
-  X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
+import { WordPracticeModal } from "@/components/WordPracticeModal";
 import { getVideo } from "@/lib/mock-data";
-import { translate, definition } from "@/lib/translations";
+import { SPEEDS, useSentencePlayer } from "@/hooks/useSentencePlayer";
+import { stripWord, useShadowRecording } from "@/hooks/useShadowRecording";
 
 export const Route = createFileRoute("/practice/$id/$idx")({
   head: () => ({ meta: [{ title: "Practice — Shadowly" }] }),
   component: PracticeScreen,
 });
 
-const SPEEDS = [1, 0.75, 0.5];
-
-type WordResult = { word: string; ok: boolean };
-
-function normalize(s: string) {
-  return s
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s']/gu, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-function stripWord(s: string) {
-  return s.toLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
-}
-
-function scoreWords(target: string, heard: string): { words: WordResult[]; ratio: number } {
-  const tgt = normalize(target);
-  const heardSet = new Set(normalize(heard));
-  let ok = 0;
-  const words = tgt.map((w) => {
-    const good = heardSet.has(w);
-    if (good) ok++;
-    return { word: w, ok: good };
-  });
-  return { words, ratio: tgt.length ? ok / tgt.length : 0 };
-}
-
 function tokenize(text: string): string[] {
   return text.match(/\S+/g) ?? [];
-}
-
-function speak(text: string, rate = 0.9) {
-  try {
-    const s = window.speechSynthesis;
-    if (!s) return;
-    s.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US";
-    u.rate = rate;
-    s.speak(u);
-  } catch {}
 }
 
 function PracticeScreen() {
@@ -72,130 +33,26 @@ function PracticeScreen() {
   const video = getVideo(id);
   const [index, setIndex] = useState(Number(idx) || 0);
   const [showIpa, setShowIpa] = useState(false);
-  const [speedIdx, setSpeedIdx] = useState(0);
-  const [recording, setRecording] = useState(false);
-  const [result, setResult] = useState<WordResult[] | null>(null);
   const [status, setStatus] = useState<string>("Listen…");
-  const [error, setError] = useState<string | null>(null);
-  
   const [wordPractice, setWordPractice] = useState<string | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
-  const [ratio, setRatio] = useState<number | null>(null);
-
-  const playerRef = useRef<YouTubePlayer | null>(null);
-  const intervalRef = useRef<number | null>(null);
-  const stopTimerRef = useRef<number | null>(null);
-  const activeSegmentRef = useRef<{ start: number; end: number; index: number } | null>(null);
-  const stoppingRef = useRef(false);
-  const lastPlayerStateRef = useRef<number | null>(null);
-  const recognitionRef = useRef<any>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
-  const transcriptRef = useRef<string>("");
 
   const line = video?.transcript[index];
 
-  const clearSegmentTimers = () => {
-    if (stopTimerRef.current) {
-      window.clearTimeout(stopTimerRef.current);
-      stopTimerRef.current = null;
-    }
-    if (intervalRef.current) {
-      window.clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-  };
+  const player = useSentencePlayer({
+    onPauseAtEnd: () => setStatus("Now tap the mic and repeat"),
+  });
 
-  const pauseAtSentenceEnd = useCallback((endTime: number) => {
-    if (stoppingRef.current) return;
-    stoppingRef.current = true;
-    clearSegmentTimers();
-    try {
-      const p = playerRef.current;
-      p?.pauseVideo();
-      p?.seekTo(endTime, true);
-    } catch {}
-    window.setTimeout(() => {
-      stoppingRef.current = false;
-    }, 80);
-    setStatus("Now tap the mic and repeat");
-  }, []);
+  const recording = useShadowRecording({
+    onScore: (_words, r) => setStatus(`${Math.round(r * 100)}% match — review below`),
+  });
 
-  const startSentenceTracker = useCallback(
-    (segment: { start: number; end: number; index: number }) => {
-      clearSegmentTimers();
-      activeSegmentRef.current = segment;
-      intervalRef.current = window.setInterval(async () => {
-        const active = activeSegmentRef.current;
-        const p = playerRef.current;
-        if (!active || !p || stoppingRef.current) return;
-        try {
-          const t = await p.getCurrentTime();
-          if (typeof t !== "number") return;
-          if (t < active.start - 0.15) {
-            p.seekTo(active.start, true);
-            return;
-          }
-          if (t >= active.end) pauseAtSentenceEnd(active.end);
-        } catch {}
-      }, 40);
-    },
-    [pauseAtSentenceEnd],
-  );
-
-  const playSegment = useCallback(
-    (startIndex = index) => {
-      const v = video;
-      const p = playerRef.current;
-      if (!v || !p) return;
-      const seg = v.transcript[startIndex];
-      if (!seg) return;
-      const segment = { start: seg.start, end: seg.end, index: startIndex };
-      activeSegmentRef.current = segment;
-      stoppingRef.current = false;
-      try {
-        p.setPlaybackRate(SPEEDS[speedIdx]);
-        p.seekTo(seg.start, true);
-        p.playVideo();
-      } catch {}
-      setStatus("Listen…");
-      startSentenceTracker(segment);
-      const durMs = ((seg.end - seg.start) * 1000) / SPEEDS[speedIdx] + 800;
-      stopTimerRef.current = window.setTimeout(() => pauseAtSentenceEnd(seg.end), durMs);
-    },
-    [index, pauseAtSentenceEnd, speedIdx, startSentenceTracker, video],
-  );
-
-  const handlePlayerStateChange = useCallback(
-    async (e: { data: number; target: YouTubePlayer }) => {
-      const playingState = 1;
-      const pausedState = 2;
-      const previousState = lastPlayerStateRef.current;
-      lastPlayerStateRef.current = e.data;
-      if (e.data !== playingState || stoppingRef.current) return;
-      const active = activeSegmentRef.current ?? (line ? { start: line.start, end: line.end, index } : null);
-      if (!active) return;
-      try {
-        const t = await e.target.getCurrentTime();
-        if (
-          previousState === pausedState ||
-          typeof t !== "number" ||
-          t >= active.end - 0.05 ||
-          t < active.start - 0.15
-        ) {
-          e.target.seekTo(active.start, true);
-        }
-        e.target.setPlaybackRate(SPEEDS[speedIdx]);
-        e.target.playVideo();
-        setStatus("Listen…");
-        startSentenceTracker(active);
-      } catch {}
-    },
-    [index, line, speedIdx, startSentenceTracker],
-  );
+  const playCurrentSegment = useCallback(() => {
+    if (!line) return;
+    setStatus("Listen…");
+    player.playSegment({ start: line.start, end: line.end }, index);
+  }, [line, index, player]);
 
   const goPrev = () => {
     if (!video) return;
@@ -207,184 +64,38 @@ function PracticeScreen() {
     else setStatus("You finished! 🎉");
   };
 
-  const setSpeed = (i: number) => {
-    setSpeedIdx(i);
-    try {
-      playerRef.current?.setPlaybackRate(SPEEDS[i]);
-    } catch {}
-  };
-
-  const SR: any = useMemo(() => {
-    if (typeof window === "undefined") return null;
-    return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-  }, []);
-
-  const stopRecording = () => {
-    try {
-      recognitionRef.current?.stop();
-    } catch {}
-    try {
-      mediaRecorderRef.current?.stop();
-    } catch {}
-    setRecording(false);
-  };
-
-  const startRecording = async () => {
-    setError(null);
-    setResult(null);
-    setRatio(null);
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-      setAudioUrl(null);
-    }
-
-    // 1) Request the mic permission ourselves. This is the source of truth —
-    //    if this succeeds, the user granted permission, and any later SR
-    //    "not-allowed" is a spurious browser quirk we ignore.
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err: any) {
-      console.error(err);
-      if (err?.name === "NotAllowedError" || err?.name === "SecurityError") {
-        setError("Microphone access was blocked. Please allow it in your browser settings.");
-      } else if (err?.name === "NotFoundError") {
-        setError("No microphone was found on this device.");
-      } else {
-        setError("Could not access the microphone. Please check your device.");
-      }
-      return;
-    }
-
-    // 2) Start MediaRecorder for voice playback.
-    try {
-      mediaStreamRef.current = stream;
-      chunksRef.current = [];
-      const mr = new MediaRecorder(stream);
-      mr.ondataavailable = (ev) => {
-        if (ev.data.size > 0) chunksRef.current.push(ev.data);
-      };
-      mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        const url = URL.createObjectURL(blob);
-        setAudioUrl(url);
-        mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-        mediaStreamRef.current = null;
-      };
-      mr.start();
-      mediaRecorderRef.current = mr;
-      setRecording(true);
+  const toggleRecording = () => {
+    if (!line) return;
+    if (recording.recording) {
+      recording.stop();
+      setStatus("Scoring…");
+    } else {
+      recording.start(line.text);
       setStatus("Recording… tap again to stop");
-    } catch (err) {
-      console.error(err);
-      stream.getTracks().forEach((t) => t.stop());
-      setError("Recording is not supported in this browser.");
-      return;
-    }
-
-    // 3) Start SpeechRecognition alongside (for text scoring). This is
-    //    optional — if it fails, recording still works.
-    if (!SR) return;
-    try {
-      const rec = new SR();
-      rec.lang = "en-US";
-      rec.interimResults = true;
-      rec.maxAlternatives = 3;
-      rec.continuous = true;
-      transcriptRef.current = "";
-      rec.onerror = (e: any) => {
-        // Because getUserMedia already succeeded, silently ignore permission
-        // and no-speech noise from SpeechRecognition.
-        const kind = e?.error;
-        if (
-          kind === "no-speech" ||
-          kind === "aborted" ||
-          kind === "not-allowed" ||
-          kind === "service-not-allowed"
-        )
-          return;
-        console.warn("SpeechRecognition error", kind);
-      };
-      rec.onend = () => {
-        // Keep listening through silence until the user hits Stop.
-        if (
-          recognitionRef.current === rec &&
-          mediaRecorderRef.current?.state === "recording"
-        ) {
-          try {
-            rec.start();
-            return;
-          } catch {}
-        }
-      };
-      rec.onresult = (e: any) => {
-        let finalText = "";
-        for (let i = 0; i < e.results.length; i++) {
-          const r = e.results[i];
-          if (r.isFinal) finalText += " " + r[0].transcript;
-        }
-        if (finalText.trim()) {
-          transcriptRef.current = (transcriptRef.current + " " + finalText).trim();
-        }
-      };
-      recognitionRef.current = rec;
-      rec.start();
-    } catch (err) {
-      // Non-fatal: MediaRecorder is still capturing.
-      console.warn("SpeechRecognition failed to start", err);
     }
   };
 
-  // When MediaRecorder stops, evaluate.
+  // Reset on sentence change and sync URL.
   useEffect(() => {
-    const mr = mediaRecorderRef.current;
-    if (!mr) return;
-    const original = mr.onstop;
-    mr.onstop = (ev) => {
-      if (typeof original === "function") (original as any).call(mr, ev);
-      if (!line) return;
-      const heard = transcriptRef.current;
-      const { words, ratio: r } = scoreWords(line.text, heard);
-      setResult(words);
-      setRatio(r);
-      setStatus(`${Math.round(r * 100)}% match — review below`);
-    };
-  }, [recording, line]);
-
-  useEffect(() => {
-    setResult(null);
-    setRatio(null);
+    recording.reset();
     setStatus("Listen…");
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-      setAudioUrl(null);
-    }
-    const t = window.setTimeout(() => playSegment(index), 250);
-    // sync URL param
-    if (video) navigate({ to: "/practice/$id/$idx", params: { id: video.id, idx: String(index) }, replace: true });
+    setAudioPlaying(false);
+    const t = window.setTimeout(() => playCurrentSegment(), 250);
+    if (video)
+      navigate({
+        to: "/practice/$id/$idx",
+        params: { id: video.id, idx: String(index) },
+        replace: true,
+      });
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index]);
-
-  useEffect(() => {
-    return () => {
-      clearSegmentTimers();
-      try {
-        recognitionRef.current?.abort();
-      } catch {}
-      try {
-        mediaRecorderRef.current?.stop();
-      } catch {}
-      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   if (!video || !line) return <div className="p-8">Video not found</div>;
 
   const tokens = tokenize(line.text);
   const total = video.transcript.length;
+  const { result, ratio, audioUrl, error, SR } = recording;
 
   const playMyVoice = () => {
     const el = audioElRef.current;
@@ -436,10 +147,10 @@ function PracticeScreen() {
               playerVars: { playsinline: 1, controls: 0, rel: 0, modestbranding: 1 },
             }}
             onReady={(e: { target: YouTubePlayer }) => {
-              playerRef.current = e.target;
-              playSegment(index);
+              player.playerRef.current = e.target;
+              playCurrentSegment();
             }}
-            onStateChange={handlePlayerStateChange}
+            onStateChange={player.handlePlayerStateChange}
           />
         </div>
       </div>
@@ -466,7 +177,6 @@ function PracticeScreen() {
                 <button
                   key={i}
                   type="button"
-                  data-word-token
                   onClick={(e) => {
                     e.stopPropagation();
                     setWordPractice(stripWord(tok));
@@ -485,7 +195,6 @@ function PracticeScreen() {
           {error && <p className="mt-6 text-center text-xs text-destructive">{error}</p>}
         </div>
 
-        {/* Review panel */}
         {(audioUrl || result) && (
           <div className="mt-8 rounded-2xl border border-border bg-card p-4 shadow-sm">
             <div className="flex items-center justify-between mb-3">
@@ -494,7 +203,9 @@ function PracticeScreen() {
                 <span
                   className={
                     "text-xs font-bold px-2 py-0.5 rounded-full " +
-                    (ratio >= 0.7 ? "bg-primary-soft text-primary" : "bg-destructive/10 text-destructive")
+                    (ratio >= 0.7
+                      ? "bg-primary-soft text-primary"
+                      : "bg-destructive/10 text-destructive")
                   }
                 >
                   {Math.round(ratio * 100)}%
@@ -508,7 +219,11 @@ function PracticeScreen() {
                   onClick={playMyVoice}
                   className="h-10 w-10 rounded-full bg-primary text-primary-foreground grid place-items-center shadow-md active:scale-95"
                 >
-                  {audioPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
+                  {audioPlaying ? (
+                    <Pause className="h-4 w-4" />
+                  ) : (
+                    <Play className="h-4 w-4 ml-0.5" />
+                  )}
                 </button>
                 <div className="text-xs text-muted-foreground">Listen to your recording</div>
                 <audio
@@ -528,7 +243,9 @@ function PracticeScreen() {
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {result.filter((w) => !w.ok).length === 0 ? (
-                    <span className="text-xs text-primary font-semibold">All words correct 🎉</span>
+                    <span className="text-xs text-primary font-semibold">
+                      All words correct 🎉
+                    </span>
                   ) : (
                     result
                       .filter((w) => !w.ok)
@@ -549,7 +266,6 @@ function PracticeScreen() {
         )}
       </main>
 
-      {/* Bottom controls */}
       <div className="fixed bottom-0 inset-x-0 border-t border-border bg-background/95 backdrop-blur">
         <div className="mx-auto max-w-2xl px-4 py-4 flex items-center justify-between gap-2">
           <button
@@ -562,29 +278,38 @@ function PracticeScreen() {
           </button>
 
           <button
-            onClick={() => setSpeed((speedIdx + 1) % SPEEDS.length)}
+            onClick={() => player.setSpeed((player.speedIdx + 1) % SPEEDS.length)}
             className="flex flex-col items-center gap-0.5 w-14"
           >
             <div className="h-10 w-10 rounded-full bg-secondary grid place-items-center">
               <Gauge className="h-4 w-4 text-foreground" />
             </div>
-            <span className="text-[10px] font-bold text-foreground">{SPEEDS[speedIdx]}x</span>
+            <span className="text-[10px] font-bold text-foreground">
+              {SPEEDS[player.speedIdx]}x
+            </span>
           </button>
 
           <button
-            onClick={recording ? stopRecording : startRecording}
+            onClick={toggleRecording}
             className={
               "h-20 w-20 rounded-full grid place-items-center shadow-xl transition-all active:scale-95 " +
-              (recording
+              (recording.recording
                 ? "bg-destructive text-destructive-foreground animate-pulse"
                 : "bg-primary text-primary-foreground shadow-primary/40")
             }
-            aria-label={recording ? "Stop recording" : "Start recording"}
+            aria-label={recording.recording ? "Stop recording" : "Start recording"}
           >
-            {recording ? <Square className="h-7 w-7 fill-current" /> : <Mic className="h-8 w-8" />}
+            {recording.recording ? (
+              <Square className="h-7 w-7 fill-current" />
+            ) : (
+              <Mic className="h-8 w-8" />
+            )}
           </button>
 
-          <button onClick={() => playSegment(index)} className="flex flex-col items-center gap-0.5 w-14">
+          <button
+            onClick={playCurrentSegment}
+            className="flex flex-col items-center gap-0.5 w-14"
+          >
             <div className="h-10 w-10 rounded-full bg-secondary grid place-items-center">
               <RotateCcw className="h-4 w-4 text-foreground" />
             </div>
@@ -603,166 +328,12 @@ function PracticeScreen() {
       </div>
 
       {wordPractice && (
-        <WordPracticeModal word={wordPractice} onClose={() => setWordPractice(null)} SR={SR} />
+        <WordPracticeModal
+          word={wordPractice}
+          onClose={() => setWordPractice(null)}
+          SR={SR}
+        />
       )}
-    </div>
-  );
-}
-
-function WordPracticeModal({
-  word,
-  onClose,
-  SR,
-}: {
-  word: string;
-  onClose: () => void;
-  SR: any;
-}) {
-  const [recording, setRecording] = useState(false);
-  const [feedback, setFeedback] = useState<"ok" | "bad" | null>(null);
-  const [heard, setHeard] = useState<string>("");
-  const [err, setErr] = useState<string | null>(null);
-  const recRef = useRef<any>(null);
-
-  useEffect(() => {
-    return () => {
-      try {
-        recRef.current?.abort();
-      } catch {}
-      try {
-        window.speechSynthesis?.cancel();
-      } catch {}
-    };
-  }, []);
-
-  const start = () => {
-    setErr(null);
-    setFeedback(null);
-    setHeard("");
-    if (!SR) {
-      setErr("Speech recognition not supported.");
-      return;
-    }
-    const rec = new SR();
-    rec.lang = "en-US";
-    rec.interimResults = false;
-    rec.maxAlternatives = 5;
-    rec.continuous = false;
-    rec.onstart = () => setRecording(true);
-    rec.onend = () => setRecording(false);
-    rec.onerror = (e: any) => {
-      setRecording(false);
-      if (e?.error !== "no-speech") setErr(e?.error || "mic error");
-    };
-    rec.onresult = (e: any) => {
-      let best = "";
-      for (let i = 0; i < e.results.length; i++) {
-        const r = e.results[i];
-        for (let j = 0; j < r.length; j++) {
-          if (r[j].transcript.length > best.length) best = r[j].transcript;
-        }
-      }
-      setHeard(best);
-      const target = stripWord(word);
-      const ok = normalize(best).some((w) => w === target);
-      setFeedback(ok ? "ok" : "bad");
-    };
-    recRef.current = rec;
-    try {
-      rec.start();
-    } catch {}
-  };
-
-  const stop = () => {
-    try {
-      recRef.current?.stop();
-    } catch {}
-  };
-
-  const meaning = translate(word);
-  const def = definition(word);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end sm:items-center justify-center"
-      onClick={onClose}
-    >
-      <div
-        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl bg-background p-6 pb-8 shadow-2xl relative animate-in slide-in-from-bottom duration-200"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="sm:hidden mx-auto mb-4 h-1.5 w-10 rounded-full bg-border" />
-        <button
-          onClick={onClose}
-          className="absolute top-3 right-3 h-9 w-9 rounded-full grid place-items-center hover:bg-secondary"
-          aria-label="Close"
-        >
-          <X className="h-4 w-4" />
-        </button>
-        <div className="text-[11px] font-bold uppercase tracking-widest text-primary text-center mb-3">
-          Word practice
-        </div>
-        <div className="text-center">
-          <div className="text-4xl font-black text-foreground break-words">{word}</div>
-          {meaning && (
-            <div dir="rtl" className="mt-2 text-lg font-semibold text-foreground/80">
-              {meaning}
-            </div>
-          )}
-          {def && (
-            <p className="mt-3 text-sm text-muted-foreground leading-relaxed max-w-xs mx-auto">
-              {def}
-            </p>
-          )}
-          {!meaning && !def && (
-            <p className="mt-3 text-xs text-muted-foreground italic">
-              No dictionary entry — try the audio and mic below.
-            </p>
-          )}
-        </div>
-
-        <div className="mt-6 flex items-center justify-center gap-3">
-          <button
-            onClick={() => speak(word)}
-            className="inline-flex items-center gap-2 rounded-full bg-secondary text-foreground px-4 py-2.5 text-sm font-semibold hover:bg-primary-soft transition-colors"
-          >
-            <Volume2 className="h-4 w-4" /> Listen
-          </button>
-          <button
-            onClick={recording ? stop : start}
-            className={
-              "inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold shadow-md active:scale-95 transition-all " +
-              (recording
-                ? "bg-destructive text-destructive-foreground animate-pulse"
-                : "bg-primary text-primary-foreground shadow-primary/30")
-            }
-          >
-            {recording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-            {recording ? "Stop" : "Practice"}
-          </button>
-        </div>
-
-        {feedback && (
-          <div
-            className={
-              "mt-6 rounded-2xl p-4 text-center " +
-              (feedback === "ok"
-                ? "bg-primary-soft text-primary"
-                : "bg-destructive/10 text-destructive")
-            }
-          >
-            <div className="text-sm font-bold">
-              {feedback === "ok" ? "Correct! 🎉" : "Not quite — try again"}
-            </div>
-            {heard && (
-              <div className="mt-1 text-xs opacity-80">
-                Heard: <span className="font-semibold">"{heard}"</span>
-              </div>
-            )}
-          </div>
-        )}
-        {err && <div className="mt-4 text-xs text-destructive text-center">{err}</div>}
-      </div>
     </div>
   );
 }
