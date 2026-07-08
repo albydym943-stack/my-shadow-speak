@@ -66,13 +66,9 @@ function PracticeScreen() {
 
   const toggleRecording = () => {
     if (!line) return;
-    if (recording.recording) {
-      recording.stop();
-      setStatus("Scoring…");
-    } else {
-      recording.start(line.text);
-      setStatus("Recording… tap again to stop");
-    }
+    if (recording.recording) return; // single-tap: auto-stops on silence
+    recording.start(line.text);
+    setStatus("Listening… speak now");
   };
 
   // Reset on sentence change and sync URL.
