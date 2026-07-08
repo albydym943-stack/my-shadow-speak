@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, ArrowRight, Mic, Square, RotateCcw, Gauge, Volume2 } from "lucide-react";
+import { ArrowLeft, Mic, Square, RotateCcw, Gauge, Volume2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
 import { getVideo } from "@/lib/mock-data";
@@ -51,11 +51,8 @@ function PracticeScreen() {
   const [error, setError] = useState<string | null>(null);
   const [activeWord, setActiveWord] = useState<number | null>(null);
   const playerRef = useRef<YouTubePlayer | null>(null);
-  const intervalRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
   const stopTimerRef = useRef<number | null>(null);
-  const activeSegmentRef = useRef<{ start: number; end: number; index: number } | null>(null);
-  const stoppingRef = useRef(false);
-  const lastPlayerStateRef = useRef<number | null>(null);
   const recognitionRef = useRef<any>(null);
   const advanceTimerRef = useRef<number | null>(null);
 
@@ -66,52 +63,11 @@ function PracticeScreen() {
       window.clearTimeout(stopTimerRef.current);
       stopTimerRef.current = null;
     }
-    if (intervalRef.current) {
-      window.clearInterval(intervalRef.current);
-      intervalRef.current = null;
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
     }
   };
-
-  const pauseAtSentenceEnd = useCallback((endTime: number) => {
-    if (stoppingRef.current) return;
-    stoppingRef.current = true;
-    clearSegmentTimers();
-    try {
-      const p = playerRef.current;
-      p?.pauseVideo();
-      p?.seekTo(endTime, true);
-    } catch {}
-    window.setTimeout(() => {
-      stoppingRef.current = false;
-    }, 80);
-    setStatus("Now tap the mic and repeat");
-  }, []);
-
-  const startSentenceTracker = useCallback(
-    (segment: { start: number; end: number; index: number }) => {
-      clearSegmentTimers();
-      activeSegmentRef.current = segment;
-      intervalRef.current = window.setInterval(async () => {
-        const active = activeSegmentRef.current;
-        const p = playerRef.current;
-        if (!active || !p || stoppingRef.current) return;
-        try {
-          const t = await p.getCurrentTime();
-          if (typeof t !== "number") return;
-
-          if (t < active.start - 0.15) {
-            p.seekTo(active.start, true);
-            return;
-          }
-
-          if (t >= active.end) {
-            pauseAtSentenceEnd(active.end);
-          }
-        } catch {}
-      }, 40);
-    },
-    [pauseAtSentenceEnd],
-  );
 
   const playSegment = useCallback(
     (startIndex = index) => {
@@ -120,62 +76,46 @@ function PracticeScreen() {
       if (!v || !p) return;
       const seg = v.transcript[startIndex];
       if (!seg) return;
-      const segment = { start: seg.start, end: seg.end, index: startIndex };
-      activeSegmentRef.current = segment;
-      stoppingRef.current = false;
+      clearSegmentTimers();
       try {
         p.setPlaybackRate(SPEEDS[speedIdx]);
         p.seekTo(seg.start, true);
         p.playVideo();
       } catch {}
       setStatus("Listen…");
-      startSentenceTracker(segment);
+
+      const stopAt = seg.end;
+      let stopped = false;
+      const doStop = () => {
+        if (stopped) return;
+        stopped = true;
+        clearSegmentTimers();
+        try {
+          p.pauseVideo();
+          p.seekTo(stopAt, true);
+        } catch {}
+        setStatus("Now tap the mic and repeat");
+      };
+
+      // High-frequency tracker via requestAnimationFrame (~16ms) for tight cutoff.
+      const tick = async () => {
+        try {
+          const t = await p.getCurrentTime();
+          if (typeof t === "number" && t >= stopAt) {
+            doStop();
+            return;
+          }
+        } catch {}
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
 
       // Safety fallback.
       const durMs = ((seg.end - seg.start) * 1000) / SPEEDS[speedIdx] + 800;
-      stopTimerRef.current = window.setTimeout(() => pauseAtSentenceEnd(seg.end), durMs);
+      stopTimerRef.current = window.setTimeout(doStop, durMs);
     },
-    [index, pauseAtSentenceEnd, speedIdx, startSentenceTracker, video],
+    [index, speedIdx, video],
   );
-
-  const handlePlayerStateChange = useCallback(
-    async (e: { data: number; target: YouTubePlayer }) => {
-      const playingState = 1;
-      const pausedState = 2;
-      const previousState = lastPlayerStateRef.current;
-      lastPlayerStateRef.current = e.data;
-      if (e.data !== playingState || stoppingRef.current) return;
-      const active = activeSegmentRef.current ?? (line ? { start: line.start, end: line.end, index } : null);
-      if (!active) return;
-      try {
-        const t = await e.target.getCurrentTime();
-        if (
-          previousState === pausedState ||
-          typeof t !== "number" ||
-          t >= active.end - 0.05 ||
-          t < active.start - 0.15
-        ) {
-          e.target.seekTo(active.start, true);
-        }
-        e.target.setPlaybackRate(SPEEDS[speedIdx]);
-        e.target.playVideo();
-        setStatus("Listen…");
-        startSentenceTracker(active);
-      } catch {}
-    },
-    [index, line, speedIdx, startSentenceTracker],
-  );
-
-  const goToNextSentence = () => {
-    if (!video) return;
-    const next = index + 1;
-    if (next < video.transcript.length) {
-      setIndex(next);
-    } else {
-      pauseAtSentenceEnd(video.transcript[index]?.end ?? 0);
-      setStatus("You finished! 🎉");
-    }
-  };
 
   const setSpeed = (i: number) => {
     setSpeedIdx(i);
@@ -305,24 +245,15 @@ function PracticeScreen() {
           <div className="text-xs font-medium text-muted-foreground">
             {index + 1} / {video.transcript.length}
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowIpa((s) => !s)}
-              className={
-                "text-xs font-bold px-3 py-1.5 rounded-full transition-colors " +
-                (showIpa ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground")
-              }
-            >
-              IPA
-            </button>
-            <button
-              onClick={goToNextSentence}
-              className="h-9 w-9 grid place-items-center rounded-full bg-secondary hover:bg-primary-soft"
-              aria-label="Next sentence"
-            >
-              <ArrowRight className="h-4 w-4 text-foreground" />
-            </button>
-          </div>
+          <button
+            onClick={() => setShowIpa((s) => !s)}
+            className={
+              "text-xs font-bold px-3 py-1.5 rounded-full transition-colors " +
+              (showIpa ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground")
+            }
+          >
+            IPA
+          </button>
         </div>
       </header>
 
@@ -341,7 +272,6 @@ function PracticeScreen() {
               playerRef.current = e.target;
               playSegment(index);
             }}
-            onStateChange={handlePlayerStateChange}
           />
         </div>
       </div>
