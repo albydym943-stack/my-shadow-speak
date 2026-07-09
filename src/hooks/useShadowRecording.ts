@@ -147,6 +147,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         }
         scored = true;
         const heard = transcriptRef.current;
+        console.log("[SR DEBUG] finish() heard =", heard);
         const { words, ratio: r } = scoreWords(targetTextRef.current, heard);
         setResult(words);
         setRatio(r);
@@ -236,8 +237,9 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
             if (r.isFinal) finalText += " " + r[0].transcript;
             else if (!finalText) finalText += " " + r[0].transcript;
           }
-          const candidate = finalText.trim();
-          if (!candidate) return;
+        const candidate = finalText.trim();
+        console.log("[SR DEBUG] candidate:", candidate, "isFinal:", e.results[e.results.length - 1]?.isFinal, "resultsCount:", e.results.length);
+        if (!candidate) return;
 
           const current = transcriptRef.current || "";
           const lastResult = e.results[e.results.length - 1];
@@ -251,6 +253,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         // Native silence detection: browser fires onend on its own.
         // Do NOT restart — stop the recorder so scoring runs.
         rec.onend = () => {
+          console.log("[SR DEBUG] onend fired. transcriptRef.current =", transcriptRef.current);
           if (recognitionRef.current !== rec) return;
           recognitionRef.current = null;
           if (onEndTimeoutRef.current) {
