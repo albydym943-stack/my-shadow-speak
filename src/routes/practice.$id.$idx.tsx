@@ -107,6 +107,18 @@ function PracticeScreen() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col pb-56">
+      {/* TEMPORARY on-screen debug log for mobile testing */}
+      <div className="fixed top-16 inset-x-2 z-50 max-h-[120px] overflow-y-auto rounded-lg border border-border bg-secondary/95 text-secondary-foreground p-2 font-mono text-[10px] shadow-lg">
+        <div className="font-bold uppercase tracking-wider mb-1 text-[9px] text-muted-foreground">
+          DEBUG (temporary)
+        </div>
+        {debugLog.length === 0 ? (
+          <span className="opacity-70">No logs yet.</span>
+        ) : (
+          debugLog.map((line, i) => <div key={i}>{line}</div>)
+        )}
+      </div>
+
       <header className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border">
         <div className="mx-auto max-w-2xl px-4 h-14 flex items-center justify-between">
           <Link
