@@ -39,6 +39,13 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
   const [ratio, setRatio] = useState<number | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [debugLog, setDebugLog] = useState<string[]>([]);
+
+  const pushDebug = useCallback((line: string) => {
+    const entry = `${new Date().toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })} ${line}`;
+    console.log(entry);
+    setDebugLog((prev) => [...prev.slice(-9), entry]);
+  }, []);
 
   const recognitionRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -147,7 +154,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         }
         scored = true;
         const heard = transcriptRef.current;
-        console.log("[SR DEBUG] finish() heard =", heard);
+        pushDebug(`finish heard="${heard}"`);
         const { words, ratio: r } = scoreWords(targetTextRef.current, heard);
         setResult(words);
         setRatio(r);
@@ -238,7 +245,8 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
             else if (!finalText) finalText += " " + r[0].transcript;
           }
         const candidate = finalText.trim();
-        console.log("[SR DEBUG] candidate:", candidate, "isFinal:", e.results[e.results.length - 1]?.isFinal, "resultsCount:", e.results.length);
+        const isFinalFlag = e.results[e.results.length - 1]?.isFinal ?? false;
+        pushDebug(`onresult candidate="${candidate}" isFinal=${isFinalFlag} resultsCount=${e.results.length}`);
         if (!candidate) return;
 
           const current = transcriptRef.current || "";
@@ -253,7 +261,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         // Native silence detection: browser fires onend on its own.
         // Do NOT restart — stop the recorder so scoring runs.
         rec.onend = () => {
-          console.log("[SR DEBUG] onend fired. transcriptRef.current =", transcriptRef.current);
+          pushDebug(`onend transcriptRef="${transcriptRef.current}"`);
           if (recognitionRef.current !== rec) return;
           recognitionRef.current = null;
           if (onEndTimeoutRef.current) {
@@ -313,6 +321,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
     ratio,
     audioUrl,
     error,
+    debugLog,
     SR,
     start,
     stop,
