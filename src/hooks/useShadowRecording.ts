@@ -48,7 +48,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
   const targetTextRef = useRef<string>("");
   const audioUrlRef = useRef<string | null>(null);
   const optsRef = useRef(opts);
-  const onEndTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const onEndTimeoutRef = useRef<number | null>(null);
   const sessionRef = useRef(0);
 
   useEffect(() => {
