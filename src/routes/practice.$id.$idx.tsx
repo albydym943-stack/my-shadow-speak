@@ -91,7 +91,7 @@ function PracticeScreen() {
 
   const tokens = tokenize(line.text);
   const total = video.transcript.length;
-  const { result, ratio, audioUrl, error, SR } = recording;
+  const { result, ratio, audioUrl, error, debugLog, SR } = recording;
 
   const playMyVoice = () => {
     const el = audioElRef.current;
