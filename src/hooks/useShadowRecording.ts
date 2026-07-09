@@ -48,6 +48,8 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
   const targetTextRef = useRef<string>("");
   const audioUrlRef = useRef<string | null>(null);
   const optsRef = useRef(opts);
+  const onEndTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const sessionRef = useRef(0);
 
   useEffect(() => {
     optsRef.current = opts;
@@ -64,6 +66,10 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
 
   // Fully release every resource. Safe to call multiple times.
   const cleanupAll = useCallback(() => {
+    if (onEndTimeoutRef.current) {
+      clearTimeout(onEndTimeoutRef.current);
+      onEndTimeoutRef.current = null;
+    }
     try {
       recognitionRef.current?.abort();
     } catch {}
@@ -78,6 +84,11 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
   }, []);
 
   const reset = useCallback(() => {
+    sessionRef.current++;
+    if (onEndTimeoutRef.current) {
+      clearTimeout(onEndTimeoutRef.current);
+      onEndTimeoutRef.current = null;
+    }
     setResult(null);
     setRatio(null);
     setError(null);
@@ -92,6 +103,8 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
     async (targetText: string) => {
       // Ensure no leftovers from any previous run.
       cleanupAll();
+      sessionRef.current++;
+      const sessionId = sessionRef.current;
 
       setError(null);
       setResult(null);
@@ -124,7 +137,14 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
       // Score once, when everything has fully ended.
       let scored = false;
       const finish = () => {
-        if (scored) return;
+        if (scored) {
+          setRecording(false);
+          return;
+        }
+        if (sessionRef.current !== sessionId) {
+          setRecording(false);
+          return;
+        }
         scored = true;
         const heard = transcriptRef.current;
         const { words, ratio: r } = scoreWords(targetTextRef.current, heard);
@@ -216,8 +236,15 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
             if (r.isFinal) finalText += " " + r[0].transcript;
             else if (!finalText) finalText += " " + r[0].transcript;
           }
-          if (finalText.trim()) {
-            transcriptRef.current = finalText.trim();
+          const candidate = finalText.trim();
+          if (!candidate) return;
+
+          const current = transcriptRef.current || "";
+          const lastResult = e.results[e.results.length - 1];
+          const isFinal = lastResult?.isFinal;
+
+          if (candidate.length > current.length || (candidate.length === current.length && isFinal)) {
+            transcriptRef.current = candidate;
           }
         };
 
@@ -226,7 +253,13 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         rec.onend = () => {
           if (recognitionRef.current !== rec) return;
           recognitionRef.current = null;
-          stopAll();
+          if (onEndTimeoutRef.current) {
+            clearTimeout(onEndTimeoutRef.current);
+          }
+          onEndTimeoutRef.current = window.setTimeout(() => {
+            onEndTimeoutRef.current = null;
+            stopAll();
+          }, 250);
         };
 
         recognitionRef.current = rec;
@@ -240,6 +273,10 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
 
   // Manual stop (used only on unmount / sentence change / reset).
   const stop = useCallback(() => {
+    if (onEndTimeoutRef.current) {
+      clearTimeout(onEndTimeoutRef.current);
+      onEndTimeoutRef.current = null;
+    }
     try {
       recognitionRef.current?.abort();
     } catch {}
