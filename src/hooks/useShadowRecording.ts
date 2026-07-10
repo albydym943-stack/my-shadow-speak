@@ -37,25 +37,12 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
   const [recording, setRecording] = useState(false);
   const [result, setResult] = useState<WordResult[] | null>(null);
   const [ratio, setRatio] = useState<number | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [debugLog, setDebugLog] = useState<string[]>([]);
-
-  const pushDebug = useCallback((line: string) => {
-    const entry = `${new Date().toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" })} ${line}`;
-    console.log(entry);
-    setDebugLog((prev) => [...prev.slice(-9), entry]);
-  }, []);
 
   const recognitionRef = useRef<any>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const transcriptRef = useRef<string>("");
   const targetTextRef = useRef<string>("");
-  const audioUrlRef = useRef<string | null>(null);
   const optsRef = useRef(opts);
-  const onEndTimeoutRef = useRef<number | null>(null);
   const sessionRef = useRef(0);
 
   useEffect(() => {
@@ -67,48 +54,24 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
     return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   }, []);
 
-  useEffect(() => {
-    audioUrlRef.current = audioUrl;
-  }, [audioUrl]);
-
-  // Fully release every resource. Safe to call multiple times.
   const cleanupAll = useCallback(() => {
-    if (onEndTimeoutRef.current) {
-      clearTimeout(onEndTimeoutRef.current);
-      onEndTimeoutRef.current = null;
-    }
     try {
       recognitionRef.current?.abort();
     } catch {}
     recognitionRef.current = null;
-    try {
-      const mr = mediaRecorderRef.current;
-      if (mr && mr.state !== "inactive") mr.stop();
-    } catch {}
-    mediaRecorderRef.current = null;
-    mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-    mediaStreamRef.current = null;
   }, []);
 
   const reset = useCallback(() => {
     sessionRef.current++;
-    if (onEndTimeoutRef.current) {
-      clearTimeout(onEndTimeoutRef.current);
-      onEndTimeoutRef.current = null;
-    }
+    cleanupAll();
     setResult(null);
     setRatio(null);
     setError(null);
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = null;
-      setAudioUrl(null);
-    }
-  }, []);
+    setRecording(false);
+  }, [cleanupAll]);
 
   const start = useCallback(
-    async (targetText: string) => {
-      // Ensure no leftovers from any previous run.
+    (targetText: string) => {
       cleanupAll();
       sessionRef.current++;
       const sessionId = sessionRef.current;
@@ -116,15 +79,14 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
       setError(null);
       setResult(null);
       setRatio(null);
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-        setAudioUrl(null);
-      }
       targetTextRef.current = targetText;
       transcriptRef.current = "";
 
-      // Score once, when everything has fully ended.
+      if (!SR) {
+        setError("Speech recognition is not supported in this browser.");
+        return;
+      }
+
       let scored = false;
       const finish = () => {
         if (scored) {
@@ -137,7 +99,6 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         }
         scored = true;
         const heard = transcriptRef.current;
-        pushDebug(`finish heard="${heard}"`);
         const { words, ratio: r } = scoreWords(targetTextRef.current, heard);
         setResult(words);
         setRatio(r);
@@ -145,186 +106,72 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         setRecording(false);
       };
 
-
-      // Stops recognition + recorder together. Cleanup happens in mr.onstop.
-      const stopAll = () => {
-        try {
-          recognitionRef.current?.stop();
-        } catch {}
-        try {
-          recognitionRef.current?.abort();
-        } catch {}
-        recognitionRef.current = null;
-        const mr = mediaRecorderRef.current;
-        if (mr && mr.state !== "inactive") {
-          try {
-            mr.stop();
-          } catch {}
-        } else {
-          // No recorder to fire onstop — release stream + score now.
-          mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-          mediaStreamRef.current = null;
-          mediaRecorderRef.current = null;
-          finish();
-        }
-      };
-
-      // Start SpeechRecognition FIRST so it acquires the mic before MediaRecorder.
-      if (SR) {
-        try {
-          const rec = new SR();
-          rec.lang = "en-US";
-          rec.interimResults = true;
-          rec.maxAlternatives = 3;
-          rec.continuous = false;
-
-          rec.onerror = (e: any) => {
-            const kind = e?.error;
-            if (kind === "no-speech" || kind === "aborted") return;
-            if (kind === "not-allowed" || kind === "service-not-allowed") {
-              setError(
-                "Speech recognition was blocked by the browser. Please allow microphone access.",
-              );
-            } else {
-              console.warn("SpeechRecognition error", kind);
-            }
-          };
-
-          rec.onresult = (e: any) => {
-            let finalText = "";
-            for (let i = 0; i < e.results.length; i++) {
-              const r = e.results[i];
-              if (r.isFinal) finalText += " " + r[0].transcript;
-              else if (!finalText) finalText += " " + r[0].transcript;
-            }
-            const candidate = finalText.trim();
-            const isFinalFlag = e.results[e.results.length - 1]?.isFinal ?? false;
-            pushDebug(`onresult candidate="${candidate}" isFinal=${isFinalFlag} resultsCount=${e.results.length}`);
-            if (!candidate) return;
-
-            const current = transcriptRef.current || "";
-            const lastResult = e.results[e.results.length - 1];
-            const isFinal = lastResult?.isFinal;
-
-            if (candidate.length > current.length || (candidate.length === current.length && isFinal)) {
-              transcriptRef.current = candidate;
-            }
-          };
-
-          rec.onend = () => {
-            pushDebug(`onend transcriptRef="${transcriptRef.current}"`);
-            if (recognitionRef.current !== rec) return;
-            recognitionRef.current = null;
-            if (onEndTimeoutRef.current) {
-              clearTimeout(onEndTimeoutRef.current);
-            }
-            onEndTimeoutRef.current = window.setTimeout(() => {
-              onEndTimeoutRef.current = null;
-              stopAll();
-            }, 250);
-          };
-
-          // Wait for SR to actually acquire the mic before starting MediaRecorder.
-          // Prefer onaudiostart, fall back to onstart, and hard timeout at 400ms.
-          await new Promise<void>((resolve) => {
-            let done = false;
-            const finishWait = () => {
-              if (done) return;
-              done = true;
-              resolve();
-            };
-            rec.onstart = () => {
-              pushDebug("SR onstart");
-              finishWait();
-            };
-            rec.onaudiostart = () => {
-              pushDebug("SR onaudiostart");
-              finishWait();
-            };
-            recognitionRef.current = rec;
-            try {
-              rec.start();
-            } catch (err) {
-              console.warn("SpeechRecognition failed to start", err);
-              finishWait();
-            }
-            window.setTimeout(finishWait, 400);
-          });
-        } catch (err) {
-          console.warn("SpeechRecognition setup failed", err);
-        }
-      }
-
-      let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (err: any) {
-        console.error(err);
-        try {
-          recognitionRef.current?.abort();
-        } catch {}
-        recognitionRef.current = null;
-        if (err?.name === "NotAllowedError" || err?.name === "SecurityError") {
-          setError("Microphone access was blocked. Please allow it in your browser settings.");
-        } else if (err?.name === "NotFoundError") {
-          setError("No microphone was found on this device.");
-        } else {
-          setError("Could not access the microphone. Please check your device.");
-        }
-        return;
-      }
+        const rec = new SR();
+        rec.lang = "en-US";
+        rec.interimResults = true;
+        rec.maxAlternatives = 3;
+        rec.continuous = false;
 
-      mediaStreamRef.current = stream;
-
-      try {
-        chunksRef.current = [];
-        const mr = new MediaRecorder(stream);
-        mr.ondataavailable = (ev) => {
-          if (ev.data.size > 0) chunksRef.current.push(ev.data);
+        rec.onerror = (e: any) => {
+          const kind = e?.error;
+          if (kind === "no-speech" || kind === "aborted") return;
+          if (kind === "not-allowed" || kind === "service-not-allowed") {
+            setError(
+              "Speech recognition was blocked by the browser. Please allow microphone access.",
+            );
+          } else {
+            console.warn("SpeechRecognition error", kind);
+          }
         };
-        mr.onstop = () => {
-          const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-          const url = URL.createObjectURL(blob);
-          audioUrlRef.current = url;
-          setAudioUrl(url);
-          mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-          mediaStreamRef.current = null;
-          mediaRecorderRef.current = null;
+
+        rec.onresult = (e: any) => {
+          let finalText = "";
+          for (let i = 0; i < e.results.length; i++) {
+            const r = e.results[i];
+            if (r.isFinal) finalText += " " + r[0].transcript;
+            else if (!finalText) finalText += " " + r[0].transcript;
+          }
+          const candidate = finalText.trim();
+          if (!candidate) return;
+
+          const current = transcriptRef.current || "";
+          const lastResult = e.results[e.results.length - 1];
+          const isFinal = lastResult?.isFinal;
+
+          if (candidate.length > current.length || (candidate.length === current.length && isFinal)) {
+            transcriptRef.current = candidate;
+          }
+        };
+
+        rec.onend = () => {
+          if (recognitionRef.current !== rec) return;
+          recognitionRef.current = null;
           finish();
         };
-        mr.start();
-        mediaRecorderRef.current = mr;
+
+        recognitionRef.current = rec;
+        rec.start();
         setRecording(true);
       } catch (err) {
-        console.error(err);
-        cleanupAll();
-        setError("Recording is not supported in this browser.");
-        return;
+        console.warn("SpeechRecognition failed to start", err);
+        setError("Could not start speech recognition.");
       }
     },
-    [SR, cleanupAll, pushDebug],
+    [SR, cleanupAll],
   );
 
-
-  // Manual stop (used only on unmount / sentence change / reset).
   const stop = useCallback(() => {
-    if (onEndTimeoutRef.current) {
-      clearTimeout(onEndTimeoutRef.current);
-      onEndTimeoutRef.current = null;
-    }
-    try {
-      recognitionRef.current?.abort();
-    } catch {}
-    recognitionRef.current = null;
-    const mr = mediaRecorderRef.current;
-    if (mr && mr.state !== "inactive") {
+    const rec = recognitionRef.current;
+    if (rec) {
       try {
-        mr.stop();
-      } catch {}
+        rec.stop();
+      } catch {
+        try {
+          rec.abort();
+        } catch {}
+      }
     } else {
-      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-      mediaStreamRef.current = null;
-      mediaRecorderRef.current = null;
       setRecording(false);
     }
   }, []);
@@ -332,10 +179,6 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
   useEffect(() => {
     return () => {
       cleanupAll();
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-      }
     };
   }, [cleanupAll]);
 
@@ -343,9 +186,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
     recording,
     result,
     ratio,
-    audioUrl,
     error,
-    debugLog,
     SR,
     start,
     stop,
