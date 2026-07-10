@@ -124,23 +124,6 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
       targetTextRef.current = targetText;
       transcriptRef.current = "";
 
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (err: any) {
-        console.error(err);
-        if (err?.name === "NotAllowedError" || err?.name === "SecurityError") {
-          setError("Microphone access was blocked. Please allow it in your browser settings.");
-        } else if (err?.name === "NotFoundError") {
-          setError("No microphone was found on this device.");
-        } else {
-          setError("Could not access the microphone. Please check your device.");
-        }
-        return;
-      }
-
-      mediaStreamRef.current = stream;
-
       // Score once, when everything has fully ended.
       let scored = false;
       const finish = () => {
@@ -161,6 +144,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         optsRef.current.onScore?.(words, r);
         setRecording(false);
       };
+
 
       // Stops recognition + recorder together. Cleanup happens in mr.onstop.
       const stopAll = () => {
@@ -185,6 +169,113 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         }
       };
 
+      // Start SpeechRecognition FIRST so it acquires the mic before MediaRecorder.
+      if (SR) {
+        try {
+          const rec = new SR();
+          rec.lang = "en-US";
+          rec.interimResults = true;
+          rec.maxAlternatives = 3;
+          rec.continuous = false;
+
+          rec.onerror = (e: any) => {
+            const kind = e?.error;
+            if (kind === "no-speech" || kind === "aborted") return;
+            if (kind === "not-allowed" || kind === "service-not-allowed") {
+              setError(
+                "Speech recognition was blocked by the browser. Please allow microphone access.",
+              );
+            } else {
+              console.warn("SpeechRecognition error", kind);
+            }
+          };
+
+          rec.onresult = (e: any) => {
+            let finalText = "";
+            for (let i = 0; i < e.results.length; i++) {
+              const r = e.results[i];
+              if (r.isFinal) finalText += " " + r[0].transcript;
+              else if (!finalText) finalText += " " + r[0].transcript;
+            }
+            const candidate = finalText.trim();
+            const isFinalFlag = e.results[e.results.length - 1]?.isFinal ?? false;
+            pushDebug(`onresult candidate="${candidate}" isFinal=${isFinalFlag} resultsCount=${e.results.length}`);
+            if (!candidate) return;
+
+            const current = transcriptRef.current || "";
+            const lastResult = e.results[e.results.length - 1];
+            const isFinal = lastResult?.isFinal;
+
+            if (candidate.length > current.length || (candidate.length === current.length && isFinal)) {
+              transcriptRef.current = candidate;
+            }
+          };
+
+          rec.onend = () => {
+            pushDebug(`onend transcriptRef="${transcriptRef.current}"`);
+            if (recognitionRef.current !== rec) return;
+            recognitionRef.current = null;
+            if (onEndTimeoutRef.current) {
+              clearTimeout(onEndTimeoutRef.current);
+            }
+            onEndTimeoutRef.current = window.setTimeout(() => {
+              onEndTimeoutRef.current = null;
+              stopAll();
+            }, 250);
+          };
+
+          // Wait for SR to actually acquire the mic before starting MediaRecorder.
+          // Prefer onaudiostart, fall back to onstart, and hard timeout at 400ms.
+          await new Promise<void>((resolve) => {
+            let done = false;
+            const finishWait = () => {
+              if (done) return;
+              done = true;
+              resolve();
+            };
+            rec.onstart = () => {
+              pushDebug("SR onstart");
+              finishWait();
+            };
+            rec.onaudiostart = () => {
+              pushDebug("SR onaudiostart");
+              finishWait();
+            };
+            recognitionRef.current = rec;
+            try {
+              rec.start();
+            } catch (err) {
+              console.warn("SpeechRecognition failed to start", err);
+              finishWait();
+            }
+            window.setTimeout(finishWait, 400);
+          });
+        } catch (err) {
+          console.warn("SpeechRecognition setup failed", err);
+        }
+      }
+
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err: any) {
+        console.error(err);
+        try {
+          recognitionRef.current?.abort();
+        } catch {}
+        recognitionRef.current = null;
+        if (err?.name === "NotAllowedError" || err?.name === "SecurityError") {
+          setError("Microphone access was blocked. Please allow it in your browser settings.");
+        } else if (err?.name === "NotFoundError") {
+          setError("No microphone was found on this device.");
+        } else {
+          setError("Could not access the microphone. Please check your device.");
+        }
+        return;
+      }
+
+      mediaStreamRef.current = stream;
+
       try {
         chunksRef.current = [];
         const mr = new MediaRecorder(stream);
@@ -196,7 +287,6 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
           const url = URL.createObjectURL(blob);
           audioUrlRef.current = url;
           setAudioUrl(url);
-          // Full release of mic every time recording ends.
           mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
           mediaStreamRef.current = null;
           mediaRecorderRef.current = null;
@@ -211,76 +301,10 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         setError("Recording is not supported in this browser.");
         return;
       }
-
-      if (!SR) {
-        // No speech recognition — user will need to tap stop via… nothing.
-        // Without SR we cannot auto-stop; end after a short window.
-        return;
-      }
-
-      try {
-        const rec = new SR();
-        rec.lang = "en-US";
-        rec.interimResults = true;
-        rec.maxAlternatives = 3;
-        rec.continuous = false;
-
-        rec.onerror = (e: any) => {
-          const kind = e?.error;
-          if (kind === "no-speech" || kind === "aborted") return;
-          if (kind === "not-allowed" || kind === "service-not-allowed") {
-            setError(
-              "Speech recognition was blocked by the browser. Please allow microphone access.",
-            );
-          } else {
-            console.warn("SpeechRecognition error", kind);
-          }
-        };
-
-        rec.onresult = (e: any) => {
-          let finalText = "";
-          for (let i = 0; i < e.results.length; i++) {
-            const r = e.results[i];
-            if (r.isFinal) finalText += " " + r[0].transcript;
-            else if (!finalText) finalText += " " + r[0].transcript;
-          }
-        const candidate = finalText.trim();
-        const isFinalFlag = e.results[e.results.length - 1]?.isFinal ?? false;
-        pushDebug(`onresult candidate="${candidate}" isFinal=${isFinalFlag} resultsCount=${e.results.length}`);
-        if (!candidate) return;
-
-          const current = transcriptRef.current || "";
-          const lastResult = e.results[e.results.length - 1];
-          const isFinal = lastResult?.isFinal;
-
-          if (candidate.length > current.length || (candidate.length === current.length && isFinal)) {
-            transcriptRef.current = candidate;
-          }
-        };
-
-        // Native silence detection: browser fires onend on its own.
-        // Do NOT restart — stop the recorder so scoring runs.
-        rec.onend = () => {
-          pushDebug(`onend transcriptRef="${transcriptRef.current}"`);
-          if (recognitionRef.current !== rec) return;
-          recognitionRef.current = null;
-          if (onEndTimeoutRef.current) {
-            clearTimeout(onEndTimeoutRef.current);
-          }
-          onEndTimeoutRef.current = window.setTimeout(() => {
-            onEndTimeoutRef.current = null;
-            stopAll();
-          }, 250);
-        };
-
-        recognitionRef.current = rec;
-        rec.start();
-      } catch (err) {
-        console.warn("SpeechRecognition failed to start", err);
-      }
     },
-    [SR, cleanupAll],
+    [SR, cleanupAll, pushDebug],
   );
+
 
   // Manual stop (used only on unmount / sentence change / reset).
   const stop = useCallback(() => {
