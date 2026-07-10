@@ -8,10 +8,8 @@ import {
   RotateCcw,
   Gauge,
   Volume2,
-  Play,
-  Pause,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { YTPlayer, type YouTubePlayer } from "@/components/YTPlayer";
 import { WordPracticeModal } from "@/components/WordPracticeModal";
 import { getVideo } from "@/lib/mock-data";
@@ -27,7 +25,7 @@ function tokenize(text: string): string[] {
   return text.match(/\S+/g) ?? [];
 }
 
-function PracticeScreen() {}
+function PracticeScreen() {
   const { id, idx } = Route.useParams();
   const navigate = useNavigate();
   const video = getVideo(id);
@@ -35,8 +33,6 @@ function PracticeScreen() {}
   const [showIpa, setShowIpa] = useState(false);
   const [status, setStatus] = useState<string>("Listen…");
   const [wordPractice, setWordPractice] = useState<string | null>(null);
-  const [audioPlaying, setAudioPlaying] = useState(false);
-  const audioElRef = useRef<HTMLAudioElement | null>(null);
 
   const line = video?.transcript[index];
 
@@ -66,16 +62,17 @@ function PracticeScreen() {}
 
   const toggleRecording = () => {
     if (!line) return;
-    if (recording.recording) return; // single-tap: auto-stops on silence
+    if (recording.recording) {
+      recording.stop();
+      return;
+    }
     recording.start(line.text);
     setStatus("Listening… speak now");
   };
 
-  // Reset on sentence change and sync URL.
   useEffect(() => {
     recording.reset();
     setStatus("Listen…");
-    setAudioPlaying(false);
     const t = window.setTimeout(() => playCurrentSegment(), 250);
     if (video)
       navigate({
@@ -91,34 +88,10 @@ function PracticeScreen() {}
 
   const tokens = tokenize(line.text);
   const total = video.transcript.length;
-  const { result, ratio, audioUrl, error, debugLog, SR } = recording;
-
-  const playMyVoice = () => {
-    const el = audioElRef.current;
-    if (!el) return;
-    if (audioPlaying) {
-      el.pause();
-      setAudioPlaying(false);
-    } else {
-      el.play();
-      setAudioPlaying(true);
-    }
-  };
+  const { result, ratio, error, SR } = recording;
 
   return (
     <div className="min-h-screen bg-background flex flex-col pb-56">
-      {/* TEMPORARY on-screen debug log for mobile testing */}
-      <div className="fixed top-16 inset-x-2 z-50 max-h-[120px] overflow-y-auto rounded-lg border border-border bg-secondary/95 text-secondary-foreground p-2 font-mono text-[10px] shadow-lg">
-        <div className="font-bold uppercase tracking-wider mb-1 text-[9px] text-muted-foreground">
-          DEBUG (temporary)
-        </div>
-        {debugLog.length === 0 ? (
-          <span className="opacity-70">No logs yet.</span>
-        ) : (
-          debugLog.map((line, i) => <div key={i}>{line}</div>)
-        )}
-      </div>
-
       <header className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border">
         <div className="mx-auto max-w-2xl px-4 h-14 flex items-center justify-between">
           <Link
@@ -203,10 +176,10 @@ function PracticeScreen() {}
           {error && <p className="mt-6 text-center text-xs text-destructive">{error}</p>}
         </div>
 
-        {(audioUrl || result) && (
+        {result && (
           <div className="mt-8 rounded-2xl border border-border bg-card p-4 shadow-sm">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-bold text-foreground">Review your voice</h3>
+              <h3 className="text-sm font-bold text-foreground">Review</h3>
               {ratio !== null && (
                 <span
                   className={
@@ -221,55 +194,30 @@ function PracticeScreen() {}
               )}
             </div>
 
-            {audioUrl && (
-              <div className="flex items-center gap-3 mb-3">
-                <button
-                  onClick={playMyVoice}
-                  className="h-10 w-10 rounded-full bg-primary text-primary-foreground grid place-items-center shadow-md active:scale-95"
-                >
-                  {audioPlaying ? (
-                    <Pause className="h-4 w-4" />
-                  ) : (
-                    <Play className="h-4 w-4 ml-0.5" />
-                  )}
-                </button>
-                <div className="text-xs text-muted-foreground">Listen to your recording</div>
-                <audio
-                  ref={audioElRef}
-                  src={audioUrl}
-                  onEnded={() => setAudioPlaying(false)}
-                  onPause={() => setAudioPlaying(false)}
-                  className="hidden"
-                />
+            <div>
+              <div className="text-[11px] font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
+                Missed words
               </div>
-            )}
-
-            {result && (
-              <div>
-                <div className="text-[11px] font-semibold text-muted-foreground mb-1.5 uppercase tracking-wide">
-                  Missed words
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {result.filter((w) => !w.ok).length === 0 ? (
-                    <span className="text-xs text-primary font-semibold">
-                      All words correct 🎉
-                    </span>
-                  ) : (
-                    result
-                      .filter((w) => !w.ok)
-                      .map((w, i) => (
-                        <button
-                          key={i}
-                          onClick={() => setWordPractice(w.word)}
-                          className="rounded-full bg-destructive/10 text-destructive px-2.5 py-1 text-xs font-semibold hover:bg-destructive/20"
-                        >
-                          {w.word}
-                        </button>
-                      ))
-                  )}
-                </div>
+              <div className="flex flex-wrap gap-1.5">
+                {result.filter((w) => !w.ok).length === 0 ? (
+                  <span className="text-xs text-primary font-semibold">
+                    All words correct 🎉
+                  </span>
+                ) : (
+                  result
+                    .filter((w) => !w.ok)
+                    .map((w, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setWordPractice(w.word)}
+                        className="rounded-full bg-destructive/10 text-destructive px-2.5 py-1 text-xs font-semibold hover:bg-destructive/20"
+                      >
+                        {w.word}
+                      </button>
+                    ))
+                )}
               </div>
-            )}
+            </div>
           </div>
         )}
       </main>
