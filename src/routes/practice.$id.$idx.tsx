@@ -27,7 +27,7 @@ function tokenize(text: string): string[] {
   return text.match(/\S+/g) ?? [];
 }
 
-function PracticeScreen() {
+function PracticeScreen() {}
   const { id, idx } = Route.useParams();
   const navigate = useNavigate();
   const video = getVideo(id);
