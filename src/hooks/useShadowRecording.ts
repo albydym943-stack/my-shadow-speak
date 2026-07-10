@@ -124,23 +124,6 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
       targetTextRef.current = targetText;
       transcriptRef.current = "";
 
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (err: any) {
-        console.error(err);
-        if (err?.name === "NotAllowedError" || err?.name === "SecurityError") {
-          setError("Microphone access was blocked. Please allow it in your browser settings.");
-        } else if (err?.name === "NotFoundError") {
-          setError("No microphone was found on this device.");
-        } else {
-          setError("Could not access the microphone. Please check your device.");
-        }
-        return;
-      }
-
-      mediaStreamRef.current = stream;
-
       // Score once, when everything has fully ended.
       let scored = false;
       const finish = () => {
@@ -161,6 +144,7 @@ export function useShadowRecording(opts: UseShadowRecordingOptions = {}) {
         optsRef.current.onScore?.(words, r);
         setRecording(false);
       };
+
 
       // Stops recognition + recorder together. Cleanup happens in mr.onstop.
       const stopAll = () => {
